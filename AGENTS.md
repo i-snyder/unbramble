@@ -54,7 +54,7 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 Do not change repository visibility until all of these are complete:
 
 - Publish from sanitized history: either create a clean public repository from the current tree or rewrite and re-audit this repository's private development history.
-- Run `scripts/verify-all.ps1` on the final public snapshot, ensure `.github/workflows/verify.yml` is enabled and passing there, and enable GitHub private vulnerability reporting, CodeQL, secret scanning, the dependency graph, Dependabot alerts, automatic security fixes, and Dependabot updates. Dependabot version updates are paused while private by zero limits in `.github/dependabot.yml`; raise both limits when enabling them.
+- Run `scripts/verify-all.ps1` on the final public snapshot, ensure `.github/workflows/verify.yml` is enabled and passing there, and enable GitHub private vulnerability reporting, CodeQL, secret scanning, the dependency graph, Dependabot alerts, automatic security fixes, and Dependabot updates. `.github/dependabot.yml` is intentionally absent while private; restore NuGet and GitHub Actions update entries when enabling version updates.
 - Publish `unbramble-win-x64.zip` with its SHA-256 checksum and required notices, then confirm the README's latest-release link resolves.
 
 ## Git
