@@ -46,6 +46,12 @@ UnBramble doesn't replace the Unity Editor or your IDE. It adds cross-project de
 
 See the [technical comparison](docs/comparison.md) for the exact reference forms, sourced tool-by-tool notes, and the limits behind these claims.
 
+## Why should I trust you?
+
+I've worked professionally in games since 2008 and with Unity since 2011. I'm a Unity Certified Instructor, and I've worked with Unity teams ranging from AAA studios to indies.
+
+UnBramble is the tool I developed for my own agentic Unity workflows: I wanted agents to understand a project's code and interconnected assets well enough to do strong work without constant hand-holding. The claims don't rest on my résumé alone — the architecture, known gaps, safety boundaries, and tests are all here in the repository.
+
 ## What agents can ask
 
 | When you want to know… | Start here | What you get |
