@@ -1,0 +1,21 @@
+# Build output
+bin/
+obj/
+publish/
+
+# UnBramble's own index/state (mirrors what it'll gitignore inside a target Unity project)
+*.db
+*.db-shm
+*.db-wal
+
+# IDE / tooling
+.vs/
+.idea/
+*.user
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Fixture project's generated state — the fixture source itself stays committed.
+src/UnBramble.Tests/Fixtures/MiniProject/.unbramble/

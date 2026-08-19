@@ -1,0 +1,3 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements">
+    <ui:Label name="widget-label" text="Widget" />
+</ui:UXML>

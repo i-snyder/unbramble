@@ -1,0 +1,8 @@
+{
+  "comment": "Ground truth for UnityEvent name linking. Each entry is one guid-carrying UnityEvent persistent-call entry (source asset file + m_MethodName + m_TargetAssemblyTypeName), matched under SEMANTIC-mode C# analysis (both Core and Game assemblies) so the proven/advisory distinction is meaningful. matched=true entries carry targetDocId/matchKind; matched=false (matchKind='unmatched') entries carry targetDocId:null and are permanent regression fixtures ('Vanished' is intentionally never fixed).",
+  "links": [
+    { "source": "Assets/Scenes/Level.unity", "methodName": "Jump", "targetTypeName": "Foo, Game", "matched": true, "targetDocId": "M:Foo.Jump", "matchKind": "declared", "confidence": "proven" },
+    { "source": "Assets/Scenes/Level.unity", "methodName": "Poke", "targetTypeName": "Foo, Game", "matched": true, "targetDocId": "M:BasePawn.Poke", "matchKind": "inherited", "confidence": "advisory" },
+    { "source": "Assets/Scenes/Level.unity", "methodName": "Vanished", "targetTypeName": "Foo, Game", "matched": false, "targetDocId": null, "matchKind": "unmatched", "confidence": "advisory" }
+  ]
+}

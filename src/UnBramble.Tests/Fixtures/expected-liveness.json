@@ -1,0 +1,58 @@
+{
+  "comment": "Ground truth for MiniProject's `dead-candidates` output. Computed under SEMANTIC mode for both Core and Game (dead-candidates gate 3 requires every assembly to be semantic). provenDead and advisoryDead are exact sets (equality-tested, like expected-edges.json's guidEdges) -- both, together with every file not listed in either bucket nor in mustBeLive, partition the full candidate universe. mustBeLive is a non-exhaustive spot-check of specific files that must never appear in provenDead/advisoryDead -- not every live file in the fixture is listed there, only ones specifically added to prove propagation reaches them. Assets/Data/A.asset and B.asset are a genuine isolated mutual-reference 2-cycle (A<->B, both also pointing at the already-live Foo.cs) with no other referencer at all -- deliberately left unreachable from any root (ProjectSettings.asset's preloaded-asset root points at a dedicated Assets/Data/Preloaded.asset leaf instead, to avoid disturbing other exact referencer-count regression tests for Foo.cs/A.asset/B.asset, e.g. TransitiveQueryTests' WhoUses_FooCs_Transitive_YieldsExactSetWithMinDepth) -- so they correctly surface as provenDead. Path-ref-name-collision/syntactic-text-collision screens must not require their source to be live: Assets/Dead/orphan.png is in advisoryDead (not provenDead) because Assets/UI/Menu.uxml (itself dead/unreachable) carries a broken path ref naming 'orphan.png' -- since the screen doesn't require Menu.uxml itself to be live for the collision to count, orphan.png is correctly screened instead of proven dead. Assets/Scripts/AndroidWorker.cs is entirely wrapped in `#if UNITY_ANDROID`, so it has zero rows in `symbols` under the fixture's empty define set -- referenced only from Foo.Start's own disabled `#if UNITY_ANDROID` region (`new AndroidWorker()`), same shape as AndroidOnly.cs but with the whole file (not just the call site) compiled out. Without the zero-symbols screen (ScreenReasons.NoExtractedSymbols), none of the other screens could fire for it (they all match against the candidate's own declared symbols, and it has none), so it would fall through to provenDead despite the live disabled-region reference.",
+  "roots": {
+    "projectSettingsFileCount": 3,
+    "resourcesFileCount": 2,
+    "streamingAssetsFileCount": 1,
+    "entryPointFileCount": 1,
+    "addressablesDetected": true
+  },
+  "conventionExcludedCount": 3,
+  "conventionExcludedPaths": [
+    "Assets/Scripts/Core/Core.asmdef",
+    "Assets/Scripts/Game.asmdef",
+    "Assets/link.xml"
+  ],
+  "provenDead": [
+    "Assets/Prefabs/Enemy.prefab",
+    "Assets/UI/Menu.uxml",
+    "Assets/UI/Widget.uxml",
+    "Assets/UI/Styles.uss",
+    "Assets/UI/Base.uss",
+    "Assets/Shaders/Custom.shadergraph",
+    "Assets/Dead/Orphan.prefab",
+    "Assets/Dead/Orphan.mat",
+    "Assets/Data/A.asset",
+    "Assets/Data/B.asset"
+  ],
+  "advisoryDead": [
+    { "path": "Assets/Scripts/AndroidOnly.cs", "reason": "disabled-region-screen" },
+    { "path": "Assets/Scripts/LocalPokeOwner.cs", "reason": "name-hint-collision" },
+    { "path": "Assets/Scripts/DeadBehaviour.cs", "reason": "unityevent-name-collision" },
+    { "path": "Assets/Scripts/OrphanInspector.cs", "reason": "attribute-screen" },
+    { "path": "Assets/Scripts/Sword.cs", "reason": "interface-dispatch-guard" },
+    { "path": "Assets/Dead/orphan.png", "reason": "path-ref-name-collision" },
+    { "path": "Assets/Scripts/AndroidWorker.cs", "reason": "no-extracted-symbols" }
+  ],
+  "mustBeLive": [
+    "Assets/Resources/LooseConfig.asset",
+    "Assets/Resources/loose.png",
+    "Assets/StreamingAssets/payload.bin",
+    "Assets/Data/Preloaded.asset",
+    "Assets/Scenes/Disabled.unity",
+    "Assets/Scenes/Level.unity",
+    "Assets/AddressableAssetsData/AddressableAssetSettings.asset",
+    "Assets/AddressableAssetsData/AssetGroups/SomeGroup.asset",
+    "Assets/Scripts/IWeapon.cs",
+    "Assets/Scripts/SwordVfx.cs",
+    "Assets/Scripts/KeptByReflection.cs",
+    "Assets/Scripts/KeptDep.cs",
+    "Assets/Scripts/Bootstrap.cs",
+    "Assets/Scripts/Bar.cs",
+    "Assets/Scripts/Helper.cs",
+    "Assets/Scripts/Spawned.cs",
+    "Assets/Scripts/GameState.cs",
+    "Assets/Scripts/ClickHandler.cs",
+    "Assets/Scripts/BareHandler.cs"
+  ]
+}

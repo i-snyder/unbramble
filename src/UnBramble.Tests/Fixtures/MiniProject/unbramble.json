@@ -1,0 +1,5 @@
+{
+  "liveness": {
+    "allowlist": ["Assets/Scripts/KeptByReflection.cs"]
+  }
+}

@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible UnBramble defect without sharing private project data.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach proprietary Unity assets, credentials, absolute paths, company/vendor names, or unredacted logs. Security-sensitive reports belong in private vulnerability reporting.
+  - type: input
+    id: version
+    attributes:
+      label: UnBramble version
+      placeholder: unbramble 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: unity
+    attributes:
+      label: Unity and package versions
+      placeholder: Unity 2022.3.x; Addressables 1.21.x
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Include the command, exit code, and redacted output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Prefer a minimal synthetic serialization fragment or fixture recipe.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed private project content, names, paths, credentials, and security-sensitive details.
+          required: true

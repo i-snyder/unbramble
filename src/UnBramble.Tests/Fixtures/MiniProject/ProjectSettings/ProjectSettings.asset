@@ -1,0 +1,9 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!129 &1
+PlayerSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 26
+  productGUID: 00000000000000000000000000000000
+  m_PreloadedAssets:
+  - {fileID: 11400000, guid: f6f6f6f6f6f6f6f6f6f6f6f6f6f6f602, type: 2}

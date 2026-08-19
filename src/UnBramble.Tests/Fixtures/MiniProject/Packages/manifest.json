@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "com.fake.graphtools": "1.0.0",
+    "com.unity.addressables": "1.21.21"
+  }
+}

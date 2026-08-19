@@ -1,0 +1,11 @@
+@import "Base.uss";
+
+.menu-root {
+    background-image: url("project://database/Assets/Textures/rock.png?fileID=2800000&guid=eeeeeeeeeeeeeeeeeeeeeeeeeeeeee05&type=3#rock");
+    flex-grow: 1;
+}
+
+.menu-beep {
+    /* NEGATIVE FIXTURE: resource() is a documented exclusion; must never produce an edge */
+    --beep: resource("Textures/rock");
+}

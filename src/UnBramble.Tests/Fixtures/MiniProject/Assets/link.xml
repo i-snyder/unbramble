@@ -1,0 +1,6 @@
+<linker>
+  <!-- Referenced by nothing (nothing ever points at a link.xml), yet Unity's build pipeline
+       consumes it by convention -- deleting it silently changes what code survives stripping.
+       Must never appear in provenDead or advisoryDead; counted in the exclusion output line. -->
+  <assembly fullname="Assembly-CSharp" preserve="all" />
+</linker>

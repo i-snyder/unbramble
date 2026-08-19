@@ -1,0 +1,17 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements" editor-extension-mode="False">
+    <Style src="project://database/Assets/UI/Styles.uss?fileID=7433441132597879392&amp;guid=33333333333333333333333333333309&amp;type=3#Styles" />
+    <ui:Template name="Widget" src="Widget.uxml" />
+    <!-- PERMANENT BROKEN PATH REF: Ghost.uxml does not exist, by design. Regression test. -->
+    <ui:Template name="Ghost" src="Ghost.uxml" />
+    <!-- Review finding #5 regression: a SECOND broken path ref, this one deliberately naming a
+         file that DOES exist elsewhere in the project (Assets/Dead/orphan.png) but at a path
+         this ref's own relative resolution can't reach (normalizes to Assets/UI/orphan.png, not
+         Assets/Dead/orphan.png -- stays unresolved). Menu.uxml is itself unreachable/dead, so
+         this exercises the design's UNCONDITIONED path-ref-name-collision screen rule: the
+         screen must catch this collision even though its SOURCE (Menu.uxml) is not live. -->
+    <ui:Template name="OrphanImg" src="orphan.png" />
+    <ui:VisualElement name="menu-root" class="menu-root">
+        <ui:Instance template="Widget" name="widget-a" />
+        <ui:Button name="PlayButton" text="Play" />
+    </ui:VisualElement>
+</ui:UXML>
