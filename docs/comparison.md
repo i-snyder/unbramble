@@ -8,7 +8,7 @@ Last reviewed: 2026-08-18.
 
 - **Explicit** means the reference form has a dedicated UnBramble parser, model, or test.
 - **Documented** means the other tool's own documentation describes the capability.
-- **Not documented as a general graph** does not mean the tool can never surface the relationship; it means its published workflow does not promise the same project-wide dependency model.
+- **Not documented as a general graph** doesn't mean the tool can never surface the relationship; it means its published workflow doesn't promise the same project-wide dependency model.
 - Extensions and custom tooling can broaden any Editor API. The comparison covers built-in workflows, not everything someone could build around them.
 
 ## Capability matrix
@@ -35,7 +35,7 @@ Last reviewed: 2026-08-18.
 | Assembly definition references | `asmdef` dependencies can be GUIDs, while `precompiledReferences` names a plugin DLL by filename with no GUID or path |
 | UnityEvents | A persistent call combines an object reference, method name, and assembly type; common same-asset bindings contain only a local file ID |
 | Addressables | Settings and group assets contain their own serialized identity/reference forms; liveness claims are enabled only for versions whose layout has been confirmed |
-| Registry package assets | Package contents are indexed as identity targets so ordinary project references do not appear falsely unresolved |
+| Registry package assets | Package contents are indexed as identity targets so ordinary project references don't appear falsely unresolved |
 | C# symbols | Roslyn resolves types, overloads, generics, inheritance, calls, and member access per Unity compilation unit, then projects those results into the same file graph |
 
 The complete parser and graph coverage matrix lives in [architecture.md](architecture.md#guid-edge-coverage-matrix-must-catch-forms-confirmed-against-real-unity-output).
@@ -56,7 +56,7 @@ The complete parser and graph coverage matrix lives in [architecture.md](archite
 
 ### Dependencies Hunter
 
-[Dependencies Hunter](https://github.com/AlexeyPerov/Unity-Dependencies-Hunter) builds a project asset map primarily from `AssetDatabase.GetDependencies`, offers reverse-reference views, and identifies assets absent from its detected dependency map. It can optionally add Addressables `AssetReference` scanning and Addressables root detection. That is a useful asset-cleanup workflow; UnBramble's `dead-candidates` instead walks a unified asset + code graph from declared build roots and refuses to emit candidates when its safety gates are not satisfied.
+[Dependencies Hunter](https://github.com/AlexeyPerov/Unity-Dependencies-Hunter) builds a project asset map primarily from `AssetDatabase.GetDependencies`, offers reverse-reference views, and identifies assets absent from its detected dependency map. It can optionally add Addressables `AssetReference` scanning and Addressables root detection. That's a useful asset-cleanup workflow; UnBramble's `dead-candidates` instead walks a unified asset + code graph from declared build roots and refuses to emit candidates when its safety gates aren't satisfied.
 
 ## Limits of UnBramble
 

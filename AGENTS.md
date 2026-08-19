@@ -31,7 +31,7 @@ No `docs/GOTCHAS.md` or `docs/TOOLS-REGISTER.md` exist yet — don't point at th
 
 ## Writing Style
 
-Terse, direct tone throughout (README, architecture, runbook already follow this). Do not preserve private project names, paths, customer/vendor details, or field-test narratives when the technical lesson can stand on its own.
+Terse, direct tone throughout (README, architecture, runbook already follow this). Use natural contractions in prose. Don't preserve private project names, paths, customer/vendor details, or field-test narratives when the technical lesson can stand on its own.
 
 No hard-wrapped lines in Markdown: one line per paragraph/list item, let the renderer soft-wrap. Never manually break prose at a column width.
 
@@ -49,11 +49,11 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-580 tests as of this writing. `.github/workflows/verify.yml` is checked in but manually disabled while the repository is private. Run `./scripts/verify-all.ps1` locally before a release or push that changes scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior; it is the authoritative full verification sequence.
+580 tests as of this writing. `.github/workflows/verify.yml` is checked in but manually disabled while the repository is private. Run `./scripts/verify-all.ps1` locally before a release or push that changes scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior; it's the authoritative full verification sequence.
 
 ## Public Release
 
-Do not change repository visibility until all of these are complete:
+Don't change repository visibility until all of these are complete:
 
 - Publish from sanitized history: either create a clean public repository from the current tree or rewrite and re-audit this repository's private development history.
 - Run `scripts/verify-all.ps1` on the final public snapshot, ensure `.github/workflows/verify.yml` is enabled and passing there, and enable GitHub private vulnerability reporting, CodeQL, secret scanning, the dependency graph, Dependabot alerts, automatic security fixes, and Dependabot updates. `.github/dependabot.yml` is intentionally absent while private; restore NuGet and GitHub Actions update entries when enabling version updates.

@@ -7,7 +7,7 @@ Most users should [install the release with WinGet](installing.md). Build from s
 - Windows x64
 - PowerShell 7
 - .NET 8 SDK
-- Visual Studio C++ build tools for the preferred NativeAOT publish; the script falls back to a self-contained single-file build when they are unavailable
+- Visual Studio C++ build tools for the preferred NativeAOT publish; the script falls back to a self-contained single-file build when they're unavailable
 
 ## Clone and verify
 

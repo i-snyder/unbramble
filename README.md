@@ -26,13 +26,13 @@ unbramble
 
 UnBramble will walk you through setup and grow its index. From there, `unbramble --help` shows every path through the hedge.
 
-Setup also adds a small managed instruction block to the project so compatible coding agents know UnBramble is available and when to query it. After that, ask your agent to work normally — you do not need to reintroduce the tool or manually map dependencies for every new session.
+Setup also adds a small managed instruction block to the project so compatible coding agents know UnBramble is available and when to query it. After that, ask your agent to work normally — you don't need to reintroduce the tool or manually map dependencies for every new session.
 
-UnBramble is self-contained; you do not need .NET or a running Unity Editor. See [installing](docs/installing.md) for upgrades, uninstalling, and the manual ZIP option. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
+UnBramble is self-contained; you don't need .NET or a running Unity Editor. See [installing](docs/installing.md) for upgrades, uninstalling, and the manual ZIP option. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
 
 ## Why UnBramble?
 
-The hard part of agentic work in Unity is rarely generating code. It is understanding what the change is connected to before touching it.
+The hard part of agentic work in Unity is rarely generating code. It's understanding what the change is connected to before touching it.
 
 | Without project-wide dependency awareness | With UnBramble |
 | --- | --- |
@@ -42,7 +42,7 @@ The hard part of agentic work in Unity is rarely generating code. It is understa
 | “No text match” can look like “unused” | Conservative reachability results include confidence and blind spots |
 | Index freshness is another assumption | Every query verifies freshness before answering |
 
-UnBramble does not replace the Unity Editor or your IDE. It adds cross-project dependency awareness through a standalone, machine-readable interface while you keep using those tools for what they do best.
+UnBramble doesn't replace the Unity Editor or your IDE. It adds cross-project dependency awareness through a standalone, machine-readable interface while you keep using those tools for what they do best.
 
 See the [technical comparison](docs/comparison.md) for the exact reference forms, sourced tool-by-tool notes, and the limits behind these claims.
 
@@ -57,7 +57,7 @@ See the [technical comparison](docs/comparison.md) for the exact reference forms
 | Is the graph still fresh? | Just run a query | Every query checks freshness; a background watcher keeps the common path quick |
 | Can an agent consume this reliably? | Use `--json` (`--jsonl` for batch queries) | Stable machine-readable results, non-interactive setup, and explicit confidence |
 
-When full semantic C# analysis is not available, UnBramble says so and degrades conservatively instead of pretending the answer is complete.
+When full semantic C# analysis isn't available, UnBramble says so and degrades conservatively instead of pretending the answer is complete.
 
 `dead-candidates` is conservative static analysis, not permission to delete blindly. Read its blind-spots footer and use the documented delete-batch → smoke-test workflow.
 

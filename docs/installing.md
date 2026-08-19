@@ -1,6 +1,6 @@
 # Installing UnBramble
 
-UnBramble supports Windows x64 and does not require a separate .NET installation.
+UnBramble supports Windows x64 and doesn't require a separate .NET installation.
 
 ## Install
 
@@ -23,7 +23,7 @@ unbramble stop
 winget uninstall --exact --id i-snyder.unbramble
 ```
 
-Uninstalling the program does not delete project `.unbramble/` indexes. If you accepted optional Windows Defender exclusions, run `unbramble defender remove` from each affected project before uninstalling.
+Uninstalling the program doesn't delete project `.unbramble/` indexes. If you accepted optional Windows Defender exclusions, run `unbramble defender remove` from each affected project before uninstalling.
 
 ## Manual install
 

@@ -21,4 +21,4 @@ winget upgrade --exact --id i-snyder.unbramble
 winget uninstall --exact --id i-snyder.unbramble
 ```
 
-Confirm a fresh install works without .NET, first-run setup works in a representative Unity project, upgrades do not strand the background watcher or Defender exclusions, and uninstall leaves project `.unbramble/` state untouched.
+Confirm a fresh install works without .NET, first-run setup works in a representative Unity project, upgrades don't strand the background watcher or Defender exclusions, and uninstall leaves project `.unbramble/` state untouched.

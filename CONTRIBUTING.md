@@ -1,6 +1,6 @@
 # Contributing
 
-UnBramble is maintained with limited time. Bug reports, documentation corrections, and focused fixes are welcome. There is no guaranteed response time, roadmap commitment, or obligation to accept a proposed change.
+UnBramble is maintained with limited time. Bug reports, documentation corrections, and focused fixes are welcome. There's no guaranteed response time, roadmap commitment, or obligation to accept a proposed change.
 
 ## Before starting
 
@@ -11,7 +11,7 @@ UnBramble is maintained with limited time. Bug reports, documentation correction
 
 ## Protect project data
 
-Do not submit proprietary Unity assets, credentials, real project or company names, absolute machine paths, or unredacted logs. Reproduce parser and graph issues with the smallest synthetic fixture or serialization fragment that demonstrates the behavior.
+Don't submit proprietary Unity assets, credentials, real project or company names, absolute machine paths, or unredacted logs. Reproduce parser and graph issues with the smallest synthetic fixture or serialization fragment that demonstrates the behavior.
 
 ## Build and test
 
@@ -31,10 +31,10 @@ Run the complete `./scripts/verify-all.ps1` sequence when changing scanning, par
 - Explain the correctness case and any user-visible behavior.
 - Record the verification commands and results.
 - Update the nearest relevant documentation when behavior or guarantees change.
-- You are responsible for reviewing and understanding everything you submit, including AI-assisted work.
+- You're responsible for reviewing and understanding everything you submit, including AI-assisted work.
 
-The maintainer may ask for changes or close a pull request that does not fit the project's scope, risk tolerance, or maintenance budget.
+The maintainer may ask for changes or close a pull request that doesn't fit the project's scope, risk tolerance, or maintenance budget.
 
 ## License
 
-By submitting a contribution, you agree to license it under the repository's [MIT License](LICENSE) and confirm that you have the right to do so.
+By submitting a contribution, you agree to license it under the repository's [MIT License](LICENSE) and confirm you hold the right to do so.

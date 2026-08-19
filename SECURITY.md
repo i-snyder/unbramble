@@ -2,9 +2,9 @@
 
 ## Reporting a vulnerability
 
-Use GitHub private vulnerability reporting for security reports. Do not put exploit details, private Unity project content, filesystem layouts, or security-sensitive logs in a public issue.
+Use GitHub private vulnerability reporting for security reports. Don't put exploit details, private Unity project content, filesystem layouts, or security-sensitive logs in a public issue.
 
-If private reporting is unavailable, open a minimal issue asking the maintainer to establish a private contact channel. Include no vulnerability details in that issue.
+If private reporting isn't available, open a minimal issue asking the maintainer to establish a private contact channel. Include no vulnerability details in that issue.
 
 ## Scope worth treating carefully
 
