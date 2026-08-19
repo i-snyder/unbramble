@@ -1,16 +1,22 @@
 # UnBramble
 
+<p align="center">
+  <img src="docs/assets/unbramble-emblem.png" alt="UnBramble mouse walking through a pastoral bramble hedge" width="560">
+</p>
+
 *Give your coding agent the map you wish you had.*
 
 In a complex Unity project, the real architecture is scattered across C#, scenes, prefabs, materials, Shader Graphs, Addressables, UnityEvents, packages, and GUIDs. No one keeps every connection in their head — and an agent starting fresh sees even less.
 
 UnBramble gives coding agents a current, queryable map of how the project fits together. They can trace what a change will touch, discover connections that grep and ordinary code search miss, and make better decisions without you walking them through the project first.
 
-Early pre-release. Useful now, still settling in.
-
 ## Get started
 
-Download [`unbramble-win-x64.zip` from the latest release](https://github.com/i-snyder/unbramble/releases/latest), extract it somewhere permanent, and add that directory to your `PATH`. The binary is self-contained; you do not need .NET or a running Unity Editor.
+Install UnBramble on Windows with WinGet:
+
+```powershell
+winget install --exact --id i-snyder.unbramble
+```
 
 Open a terminal at the root of a Unity project and run:
 
@@ -22,7 +28,7 @@ UnBramble will walk you through setup and grow its index. From there, `unbramble
 
 Setup also adds a small managed instruction block to the project so compatible coding agents know UnBramble is available and when to query it. After that, ask your agent to work normally — you do not need to reintroduce the tool or manually map dependencies for every new session.
 
-Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
+UnBramble is self-contained; you do not need .NET or a running Unity Editor. See [installing](docs/installing.md) for upgrades, uninstalling, and the manual ZIP option. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
 
 ## Why UnBramble?
 

@@ -2,13 +2,15 @@
 
 UnBramble is a Windows CLI that builds a dependency graph of a Unity project — GUID/asset references (prefabs, scenes, materials, shaders, Addressables, ...) plus real C# semantic analysis (Roslyn) — so an agent can ask "what does this touch / what touches this" instead of grepping and missing Unity's hidden reference forms.
 
-Early pre-release. Keep docs terse, direct, and useful to someone encountering the repository for the first time.
+Keep docs terse, direct, and useful to someone encountering the repository for the first time.
 
 ## Start Here
 
-- `README.md` — first-time user overview, binary setup, and feature summary.
+- `README.md` — first-time user overview, WinGet setup, and feature summary.
 - `CONTRIBUTING.md` — contribution scope, privacy rules, and verification requirements.
-- `docs/building.md` — source-build and release-package instructions.
+- `docs/installing.md` — install, upgrade, uninstall, and manual ZIP instructions.
+- `docs/building.md` — source-build instructions.
+- `docs/releasing.md` — maintainer release, GitHub artifact, and WinGet workflow.
 - `docs/comparison.md` — sourced technical comparison with adjacent Unity tools.
 - `docs/architecture.md` — full design, invariants, known gaps. Read before touching the scanner, parser, store, or liveness code.
 - `docs/validation-runbook.md` — validation procedure against a real Unity project and the per-project adoption gates.
@@ -33,7 +35,7 @@ Terse, direct tone throughout (README, architecture, runbook already follow this
 
 No hard-wrapped lines in Markdown: one line per paragraph/list item, let the renderer soft-wrap. Never manually break prose at a column width.
 
-README is a first-time end-user overview — positioning, binary setup, and a compact command map. Contributor and implementation details belong in `CONTRIBUTING.md` and `docs/`.
+README is a first-time end-user overview — positioning, WinGet setup, and a compact command map. Contributor and implementation details belong in `CONTRIBUTING.md` and `docs/`.
 
 ## Agent Files
 
@@ -55,7 +57,7 @@ Do not change repository visibility until all of these are complete:
 
 - Publish from sanitized history: either create a clean public repository from the current tree or rewrite and re-audit this repository's private development history.
 - Run `scripts/verify-all.ps1` on the final public snapshot, ensure `.github/workflows/verify.yml` is enabled and passing there, and enable GitHub private vulnerability reporting, CodeQL, secret scanning, the dependency graph, Dependabot alerts, automatic security fixes, and Dependabot updates. `.github/dependabot.yml` is intentionally absent while private; restore NuGet and GitHub Actions update entries when enabling version updates.
-- Publish `unbramble-win-x64.zip` with its SHA-256 checksum and required notices, then confirm the README's latest-release link resolves.
+- Complete the release flow in `docs/releasing.md`: publish `unbramble-win-x64.zip` with its SHA-256 checksum and required notices, validate install/upgrade/uninstall through WinGet, and confirm the README's commands resolve.
 
 ## Git
 

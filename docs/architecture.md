@@ -4,14 +4,14 @@ Agent-facing reference: the settled design, the invariants that must never be si
 
 ## What this is
 
-UnBramble is a standalone, single-binary CLI (`unbramble`) that builds a unified dependency graph of a Unity project — GUID/asset references (prefabs, scenes, materials, shaders, UI Toolkit, Addressables, …) plus C# semantic analysis (Roslyn) — so an AI coding agent (or a human) can ask "what does this touch / what touches this" across the static reference forms UnBramble models instead of reconstructing the picture by grepping and manual reading.
+UnBramble is a standalone Windows CLI (`unbramble`) that builds a unified dependency graph of a Unity project — GUID/asset references (prefabs, scenes, materials, shaders, UI Toolkit, Addressables, …) plus C# semantic analysis (Roslyn) — so an AI coding agent (or a human) can ask "what does this touch / what touches this" across the static reference forms UnBramble models instead of reconstructing the picture by grepping and manual reading.
 
 ## Non-negotiable invariants
 
 - **Correctness is the only primary goal.** Token/context efficiency matters only instrumentally. Never trade correctness for speed, cost, or token efficiency — if a slower or more expensive query gets a more correct answer, that's the right trade, always.
 - **Asymmetric risk (the single most load-bearing rule in this codebase).** A false positive ("this is provably dead / safe to delete" when it isn't) can break a shipped game and is unacceptable. A false negative ("I can't tell") only costs a deeper look and is fine. On any ambiguity, always default to "cannot prove" — never promote an unprovable case to a deletion candidate. This rule is the reason confidence labels can only ever be *downgraded* by ambiguity, never upgraded by a heuristic.
 - **Freshness invariant: never wrong, only sometimes slower.** The index may be slow to answer; it may never silently answer from stale data.
-- **One binary.** The end user installs and runs `unbramble` and nothing else. Embedding libraries (Roslyn, SQLite) at build time is fine; requiring a separately installed/updated tool (Rider, ReSharper, CodeGraph, etc.) is not — an agent can still use another tool *alongside* UnBramble on its own judgment, but UnBramble never relies on one being present.
+- **One installable tool.** The end user installs and runs `unbramble`; no separate .NET runtime or analysis tool is required. Bundled runtime files may live beside the executable and must remain together. Requiring a separately installed or updated tool (Rider, ReSharper, CodeGraph, etc.) is not acceptable — an agent can still use another tool *alongside* UnBramble on its own judgment, but UnBramble never relies on one being present.
 - **Not limited to deletion scenarios.** Surgical refactoring in tangled legacy code needs this as much as cleanup passes do.
 
 ## Not depending on (evaluated and rejected as runtime dependencies)

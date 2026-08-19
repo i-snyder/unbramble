@@ -1,6 +1,6 @@
 # Building UnBramble
 
-Most users should download the self-contained Windows binary from the [latest release](https://github.com/i-snyder/unbramble/releases/latest). Build from source when you want to inspect, modify, or contribute to UnBramble.
+Most users should [install the release with WinGet](installing.md). Build from source when you want to inspect, modify, or contribute to UnBramble.
 
 ## Requirements
 
@@ -19,7 +19,7 @@ cd unbramble
 
 This builds the solution with warnings treated as errors and runs the full test suite. The wrapper selects a complete x64 .NET installation even if an inherited `DOTNET_ROOT` points somewhere incomplete.
 
-## Build a local binary
+## Build a local distribution
 
 For the same publish and smoke-test sequence used for releases:
 
@@ -27,11 +27,7 @@ For the same publish and smoke-test sequence used for releases:
 ./scripts/verify-all.ps1
 ```
 
-The result is written to `publish/`. NativeAOT is attempted first; if the native toolchain is unavailable, the script produces a self-contained single-file binary instead. It also assembles the licenses and third-party notices required beside a distributed binary.
-
-## Release package
-
-The official Windows release packages the contents of `publish/` as `unbramble-win-x64.zip`: the self-contained executable, the MIT license, and all required third-party notices. A SHA-256 checksum should be published beside the archive. Do not distribute `unbramble.exe` without the accompanying notices.
+The result is written to `publish/`. NativeAOT is attempted first; if the native toolchain is unavailable, the script produces a self-contained single-file managed executable instead. The publish directory also contains the bundled native SQLite library, the MIT license, and all required third-party notices. Keep those files together.
 
 For a quick development build without publish or smoke tests:
 
@@ -40,3 +36,5 @@ dotnet build
 ```
 
 Implementation details and design invariants live in [architecture.md](architecture.md).
+
+Maintainers should follow [releasing.md](releasing.md) to turn a verified publish into GitHub and WinGet releases.

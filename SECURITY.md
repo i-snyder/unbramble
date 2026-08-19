@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Once GitHub private vulnerability reporting is enabled for the public repository, use it for security reports. Do not put exploit details, private Unity project content, filesystem layouts, or security-sensitive logs in a public issue.
+Use GitHub private vulnerability reporting for security reports. Do not put exploit details, private Unity project content, filesystem layouts, or security-sensitive logs in a public issue.
 
 If private reporting is unavailable, open a minimal issue asking the maintainer to establish a private contact channel. Include no vulnerability details in that issue.
 
@@ -14,4 +14,4 @@ The Defender feature prints every proposed process/path exclusion and requires a
 
 ## Support window
 
-This is an early pre-release. Security fixes target the latest commit on `main`; no older-version support window is promised yet.
+Security fixes target the latest release and the current `main` branch. Older releases are unsupported unless a release note says otherwise.

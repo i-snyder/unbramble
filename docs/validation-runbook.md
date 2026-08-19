@@ -8,7 +8,7 @@ Dated results from past validation runs (real-project run logs, A/B protocol exe
 
 ## 0. Prerequisites
 
-- A built `unbramble.exe` (`dotnet publish src/UnBramble.Cli/UnBramble.Cli.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=false -p:PublishSingleFile=true -o publish`, or let NativeAOT publish succeed if your machine has the VS C++ toolchain).
+- A release-candidate `publish/unbramble.exe` produced by `./scripts/verify-all.ps1`.
 - `rg` (ripgrep) on PATH (`choco install ripgrep` on Windows).
 - PowerShell 7 (`pwsh`) on PATH.
 - A real Unity project using **Force Text** serialization (`Edit > Project Settings > Editor > Asset Serialization > Mode: Force Text`) -- `unbramble init` fails fast with a clear error otherwise; that error is correct behavior, not a bug.

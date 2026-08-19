@@ -1,6 +1,6 @@
 # Contributing
 
-UnBramble is early and maintained with limited time. Bug reports, documentation corrections, and focused fixes are welcome. There is no guaranteed response time, roadmap commitment, or obligation to accept a proposed change.
+UnBramble is maintained with limited time. Bug reports, documentation corrections, and focused fixes are welcome. There is no guaranteed response time, roadmap commitment, or obligation to accept a proposed change.
 
 ## Before starting
 
