@@ -21,12 +21,12 @@ namespace UnBramble.Tests;
 ///     same `m_GUID` field, whose value is the *containing* asset's AssetDatabase guid, not a
 ///     separate sub-object identity. So no extra parsing is needed for sub-object entries either.
 ///
-/// This class does not build root/liveness logic (see Milestone08eTests for that). Its job is:
+/// This class does not build root/liveness logic (see DeadCandidatesTests for that). Its job is:
 /// confirm the capture above against the fixture, and ship the reusable
-/// Addressables-presence-and-version detector that Milestone08eTests' liveness preflight gate
+/// Addressables-presence-and-version detector that DeadCandidatesTests' liveness preflight gate
 /// consumes.
 /// </summary>
-public class Milestone08dTests
+public class AddressablesCaptureTests
 {
     // ==== settings -> group -> {target, sub-object-address-target} compose via the existing
     // ==== generic guid-ref parsing -- no new parsing/walk logic needed since settings->group->
@@ -170,7 +170,7 @@ public class Milestone08dTests
     }
 
     // ==== Prove the fixture edges above compose correctly end-to-end via the existing transitive
-    // ==== walk -- not new root/liveness logic (see Milestone08eTests for that). The
+    // ==== walk -- not new root/liveness logic (see DeadCandidatesTests for that). The
     // ==== AddressableAssetSettings.asset file node acting as a reachability root requires zero
     // ==== new code because settings->group->target is already an ordinary multi-hop guid chain
     // ==== the existing transitive CTE walk already handles.
@@ -186,7 +186,7 @@ public class Milestone08dTests
         var answer = engine.Uses(settings.Target!, transitive: true, depthCap: UnBrambleEngine.DefaultDepthCap);
 
         // settings --(depth 1)--> group --(depth 2)--> {target, atlas}. No Addressables-specific
-        // root/reachability code exists yet (see Milestone08eTests for that) -- this is the same
+        // root/reachability code exists yet (see DeadCandidatesTests for that) -- this is the same
         // recursive CTE every other `uses --transitive` query already walks.
         Assert.Contains(answer.Results, r => r.TargetPath == "Assets/AddressableAssetsData/AssetGroups/SomeGroup.asset" && r.Depth == 1);
         Assert.Contains(answer.Results, r => r.TargetPath == "Assets/Data/AddressableTarget.asset" && r.Depth == 2);
@@ -210,14 +210,14 @@ public class Milestone08dTests
         // The reverse direction of the exact same closure -- who-uses and uses share one edge
         // relation, so this composes for free once the forward direction does. This is the
         // mechanical form of "the settings asset is the root" that the liveness fixed point
-        // (Milestone08eTests) relies on: a target reached this way already shows up as reachable
+        // (DeadCandidatesTests) relies on: a target reached this way already shows up as reachable
         // from the settings file today, without any liveness code existing yet.
         Assert.Contains(answer.Results, r => r.SourcePath == "Assets/AddressableAssetsData/AssetGroups/SomeGroup.asset" && r.Depth == 1);
         Assert.Contains(answer.Results, r => r.SourcePath == "Assets/AddressableAssetsData/AddressableAssetSettings.asset" && r.Depth == 2);
     }
 
     // ==== The detector: reusable Core infrastructure the liveness preflight gate (see
-    // ==== Milestone08eTests) consumes. Tested at the Core API level throughout
+    // ==== DeadCandidatesTests) consumes. Tested at the Core API level throughout
     // ==== (AddressablesDetector.Detect takes a plain project-root path -- there is no CLI verb
     // ==== to invoke it directly).
 

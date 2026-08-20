@@ -22,7 +22,7 @@ namespace UnBramble.Tests;
 ///
 /// All scenarios force Semantic mode for both "Core" and "Game" (see <see
 /// cref="WriteSemanticModeCsproj"/>, the same generated-IDE-shaped-csproj injection
-/// Milestone08aTests/CsSessionModelTests use) — the scoped path is unreachable in Syntactic mode
+/// ReferenceCaptureTests/CsSessionModelTests use) — the scoped path is unreachable in Syntactic mode
 /// (never even attempted; <c>scopedExtractionEligible</c> is hard-false whenever
 /// <c>_watchCompilationCache</c> is null, and separately whenever a unit isn't Semantic).
 /// </summary>
@@ -583,7 +583,7 @@ public class CsScopedExtractionTests
             """);
 
     /// <summary>
-    /// Same throwaway generated-IDE-shaped csproj injection Milestone08aTests/CsSessionModelTests
+    /// Same throwaway generated-IDE-shaped csproj injection ReferenceCaptureTests/CsSessionModelTests
     /// use to force Mode A (semantic) for both assemblies -- written into THIS test's isolated
     /// fixture copy only. The scoped-extraction path (TryExtractScoped) is unreachable outside
     /// Semantic mode.

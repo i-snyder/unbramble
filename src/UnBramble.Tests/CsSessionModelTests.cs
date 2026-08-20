@@ -200,7 +200,7 @@ public class CsSessionModelTests
     {
         using var fixture = FixtureCopy.Create();
 
-        // Same throwaway generated-IDE-shaped csproj injection Milestone08aTests uses to force
+        // Same throwaway generated-IDE-shaped csproj injection ReferenceCaptureTests uses to force
         // Mode A (semantic) for both assemblies -- written into THIS test's isolated copy only.
         WriteSemanticModeCsproj(fixture.Root, "Core", defineConstants: null, bumpSeconds: 0);
         WriteSemanticModeCsproj(fixture.Root, "Game", defineConstants: null, bumpSeconds: 0);
@@ -397,7 +397,7 @@ public class CsSessionModelTests
     }
 
     /// <summary>
-    /// Same generated-IDE-shaped csproj injection as Milestone08aTests.WriteSemanticModeCsproj
+    /// Same generated-IDE-shaped csproj injection as ReferenceCaptureTests.WriteSemanticModeCsproj
     /// (every trusted platform assembly as a Reference/HintPath), plus an optional
     /// DefineConstants PropertyGroup so scenario (f) can rewrite it with a different define set.
     /// </summary>

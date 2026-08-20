@@ -7,8 +7,8 @@ namespace UnBramble.Tests;
 
 /// <summary>
 /// Asserts that scanning captures the right rows in refs / name_hints / symbol_refs / symbols —
-/// capture only, no liveness/dead-candidates assertions (see Milestone08eTests for those) and no
-/// expected-events.json linking assertions (see Milestone08cTests for those). Covers:
+/// capture only, no liveness/dead-candidates assertions (see DeadCandidatesTests for those) and no
+/// expected-events.json linking assertions (see UnityEventLinkingTests for those). Covers:
 /// refs.target_type_name capture for a guid-carrying UnityEvent call, .anim/.prefab name-hint
 /// capture (with and without a guid), and several C# semantic-mode captures that need real
 /// symbol resolution: generic type arguments, method-group/delegate-conversion references,
@@ -21,7 +21,7 @@ namespace UnBramble.Tests;
 /// other test's copy, to force Mode A (semantic) for both Game and Core (Game needs Core's real
 /// compilation to resolve the UnityEngine stub types at all).
 /// </summary>
-public class Milestone08aTests
+public class ReferenceCaptureTests
 {
     // ---- refs.target_type_name capture (guid-carrying UnityEvent call) --------------------
 
@@ -66,7 +66,7 @@ public class Milestone08aTests
     [Fact]
     public void F11_AnimationClip_IsReachableFromLevelUnity()
     {
-        // Not a liveness assertion (see Milestone08eTests for that) -- just confirms the fixture
+        // Not a liveness assertion (see DeadCandidatesTests for that) -- just confirms the fixture
         // wiring itself ("clip referenced from Level.unity") is a real guid edge, the same
         // discipline EdgeExtractionTests already applies to every other ledger row.
         using var fixture = FixtureCopy.Create();

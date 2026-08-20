@@ -23,7 +23,7 @@ namespace UnBramble.Tests;
 /// rung weaker than a real capture).</para>
 ///
 /// <para>Captured verbatim (sanitized guids/names, same discipline as the 1.21.21 capture in
-/// <see cref="Milestone08dTests"/>): <c>AddressableAssetSettings.asset</c>'s <c>m_GroupAssets</c>
+/// <see cref="AddressablesCaptureTests"/>): <c>AddressableAssetSettings.asset</c>'s <c>m_GroupAssets</c>
 /// list (an ordinary guid-ref list — the SAME shape as 1.21.21's settings-&gt;group edge, just a
 /// different field name than the single-group-reference shape the 1.21.21 fixture exercised) and
 /// a group <c>.asset</c> using the IDENTICAL entry field set captured at 1.21.21:

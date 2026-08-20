@@ -18,7 +18,7 @@ namespace UnBramble.Tests;
 /// walks are unaffected by the seam. What's new here are query shapes those suites never
 /// exercised at all: who-uses CoreUtil.cs transitively, uses Player.prefab transitively.
 /// </summary>
-public class Milestone08bTests
+public class UnifiedGraphQueryTests
 {
     // ---- cs_file_refs / unified_walk_edges views exist and are shaped correctly -----------
 
@@ -33,7 +33,7 @@ public class Milestone08bTests
         using var cmd = conn.CreateCommand();
         // Scoped to the CoreUtil.cs target specifically: Foo.cs also has a second cs_file_refs
         // row (Foo.cs -> BasePawn.cs, an "inherit" edge, since Foo inherits BasePawn -- see
-        // Milestone08cTests) with no defined row order between the two -- this view-shape check
+        // UnityEventLinkingTests) with no defined row order between the two -- this view-shape check
         // must not depend on which one a plain SELECT happens to return first.
         cmd.CommandText = """
             SELECT sf.path, tf.path, cfr.kind
@@ -160,7 +160,7 @@ public class Milestone08bTests
 
         // A fifth edge sits on top of the four guid ones: Level.unity's UnityEvent binding,
         // matched (declared) to M:Foo.Jump but capped at advisory in this base (syntactic-mode)
-        // fixture -- see Milestone08cTests and CsMergedQueryTests' sibling assertion. The four
+        // fixture -- see UnityEventLinkingTests and CsMergedQueryTests' sibling assertion. The four
         // GUID edges themselves stay proven; only the answer-level confidence (weakest-link) is
         // dragged down by the event edge.
         var guidResults = answer.Results.Where(r => r.Kind == "guid").ToList();
@@ -247,7 +247,7 @@ public class Milestone08bTests
         // addressables-unconfirmed: reserved, no who-uses/uses trigger wired yet.
         // csproj-stale: wired (UnBrambleEngine.IsAnyCsprojStale), but the base fixture has no
         // generated csproj at all -- zero semantic assemblies means CheckCsprojFreshness has
-        // nothing to compare, so it can never fire here regardless. See Milestone08eTests'
+        // nothing to compare, so it can never fire here regardless. See DeadCandidatesTests'
         // WhoUses_CsprojStale_* tests for the semantic-mode fresh/stale coverage.
         Assert.DoesNotContain("addressables-unconfirmed", answer.BlindSpots);
         Assert.DoesNotContain("csproj-stale", answer.BlindSpots);
@@ -365,9 +365,9 @@ public class Milestone08bTests
         //    Foo, Game), matched via the main resolution cascade. This base fixture has no
         //    generated IDE csproj (both assemblies land in syntactic mode), so the match is
         //    capped at advisory (a match is only proven under semantic mode) -- see
-        //    Milestone08cTests for the proven case under semantic mode.
+        //    UnityEventLinkingTests for the proven case under semantic mode.
         //  - Player.prefab's own guid-less "onLocalJump" binding (captured into name_hints by
-        //    the C# capture tests in Milestone08aTests), whose type_name="Foo" DOES resolve to a
+        //    the C# capture tests in ReferenceCaptureTests), whose type_name="Foo" DOES resolve to a
         //    symbol declaring Jump -- a guid-less annotation is always advisory, since no
         //    resolvable component chain proves it.
         var depth0 = answer.Results.Where(r => r.Depth == 0).ToList();

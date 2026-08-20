@@ -49,11 +49,11 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-580 tests as of this writing. Run `./scripts/verify-all.ps1` locally before a release or push that changes scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior; it's the authoritative full verification sequence.
+580 tests as of this writing. Run `./scripts/verify-all.ps1` locally before pushing changes to scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior.
 
 ## Public Release
 
-Follow [`docs/releasing.md`](docs/releasing.md) for the complete release and repository-visibility checklist.
+[`docs/releasing.md`](docs/releasing.md) is the sole release and repository-visibility checklist.
 
 Dependabot is intentionally not configured. Don't add `.github/dependabot.yml`, automated security fixes, or dependency-update PRs unless the maintainer explicitly asks for them. The Verify workflow is manual-only for now; run it from GitHub's Actions page or with `gh workflow run Verify`. It checks all direct and transitive NuGet dependencies for known vulnerabilities.
 

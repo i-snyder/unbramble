@@ -16,7 +16,8 @@ namespace UnBramble.Tests;
 /// "possible false negative" signal, and a speculative name-match fallback that surfaces the
 /// otherwise-invisible syntactic call sites as leads rather than silence.
 ///
-/// Uses the same throwaway-semantic-csproj pattern as Milestone08a/c/eTests (duplicated locally,
+/// Uses the same throwaway-semantic-csproj pattern as ReferenceCaptureTests,
+/// UnityEventLinkingTests, and DeadCandidatesTests (duplicated locally,
 /// not shared) so specific assemblies can be pinned semantic while others are left syntactic.
 /// </summary>
 public class SyntacticAttributionTests
@@ -447,7 +448,8 @@ public class SyntacticAttributionTests
         Assert.DoesNotContain("looks orphaned", stdOut);
     }
 
-    // ---- helpers (same throwaway-csproj pattern as Milestone08a/c/eTests, duplicated locally) ----
+    // ---- helpers (same throwaway-csproj pattern as ReferenceCaptureTests,
+    // ---- UnityEventLinkingTests, and DeadCandidatesTests, duplicated locally) -----------------
 
     /// <summary>A zero-byte stand-in for a real Unity-compiled DLL: NeverCompiledByUnity only
     /// ever checks <see cref="File.Exists(string)"/> on Library/ScriptAssemblies/&lt;name&gt;.dll,

@@ -17,15 +17,15 @@ namespace UnBramble.Tests;
 /// global liveness invariant (no provenDead file is ever the target of a resolved edge from a
 /// live file).
 ///
-/// Uses the same throwaway-semantic-csproj pattern as <see cref="Milestone08aTests"/>/
-/// <see cref="Milestone08cTests"/> (a local copy of the helper, not a shared one) so the
+/// Uses the same throwaway-semantic-csproj pattern as <see cref="ReferenceCaptureTests"/>/
+/// <see cref="UnityEventLinkingTests"/> (a local copy of the helper, not a shared one) so the
 /// fixture's two assemblies land in Semantic mode — required because any syntactic-mode assembly
 /// anywhere makes liveness unavailable, full stop, so most of this class needs semantic mode just
 /// to get past the gate. The committed base fixture deliberately has no generated csproj, so a
 /// separate test (<see cref="DeadCandidates_BaseFixture_SyntacticMode_IsUnavailable"/> below)
 /// exercises that exact gate-failure case using the unmodified fixture.
 /// </summary>
-public class Milestone08eTests
+public class DeadCandidatesTests
 {
     private static readonly string ExpectedLivenessPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "expected-liveness.json");
 
@@ -174,7 +174,7 @@ public class Milestone08eTests
         // conversion reference. If that weren't captured as a ref row at any granularity,
         // Helper.cs would have zero inbound edges and be indistinguishable from a genuinely dead
         // file. Capturing non-invocation IMethodSymbol occurrences as ordinary semantic
-        // call-kind refs (see Milestone08aTests) means Helper.cs is live via ordinary
+        // call-kind refs (see ReferenceCaptureTests) means Helper.cs is live via ordinary
         // propagation, same as any other resolved edge.
         using var fixture = FixtureCopy.Create();
         WriteSemanticModeCsprojs(fixture.Root);
@@ -937,7 +937,7 @@ public class Milestone08eTests
         Assert.DoesNotContain(result.ProvenDead, entry => entry.Path == "Assets/Scripts/PostprocessorDependency.cs");
     }
 
-    // ---- helpers (same throwaway-csproj pattern as Milestone08aTests/Milestone08cTests,
+    // ---- helpers (same throwaway-csproj pattern as ReferenceCaptureTests/UnityEventLinkingTests,
     // ---- duplicated locally rather than shared via a common test helper) ----------------------
 
     private static void WriteFixtureScript(string fixtureRoot, string fileName, string source, string guid)

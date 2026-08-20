@@ -1636,7 +1636,7 @@ public sealed class UnBrambleStore : IDisposable
     /// re-running the phase (never WRONG, but not the intended win either). `mode` is deliberately
     /// left untouched here on purpose, not merely unhandled: it stays whatever
     /// <see cref="ReplaceAssemblyAnalyses"/> last recorded for that name until the unit is
-    /// actually dirty again — e.g. `Milestone08eTests.Finding7_...` depends on a
+    /// actually dirty again — e.g. `DeadCandidatesTests.Finding7_...` depends on a
     /// semantic-mode assembly's `mode` row staying "semantic" after its generated csproj is
     /// deleted (with no other tracked file touched), specifically so
     /// `GetSemanticAssemblyNames()` still finds it and the "generated csproj missing" gate fires

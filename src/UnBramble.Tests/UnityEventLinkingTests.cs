@@ -14,17 +14,17 @@ namespace UnBramble.Tests;
 /// and preservation of unmatched bindings as plain guid annotations), `kind='event'` who-uses
 /// output, and implicit-entry-point marking for matched event handlers. Also covers
 /// `expected-events.json`, the fixture's own ground-truth ledger for every guid-carrying
-/// UnityEvent call — parser capture of those bindings is tested in Milestone08aTests; this class
+/// UnityEvent call — parser capture of those bindings is tested in ReferenceCaptureTests; this class
 /// asserts the linking/matching outcome for each one.
 ///
-/// Uses the same throwaway-semantic-csproj pattern as <see cref="Milestone08aTests"/> (a local
+/// Uses the same throwaway-semantic-csproj pattern as <see cref="ReferenceCaptureTests"/> (a local
 /// copy of the helper, not a shared one) so the fixture's two assemblies land in Semantic mode:
 /// a match is only proven when semantic resolution actually ran, so this class needs semantic
-/// mode to exercise the proven case. <see cref="Milestone08bTests"/> and
+/// mode to exercise the proven case. <see cref="UnifiedGraphQueryTests"/> and
 /// <see cref="CsMergedQueryTests"/> separately cover the syntactic-mode (base fixture, no
 /// generated csproj) case, where the very same binding still matches but is capped at advisory.
 /// </summary>
-public class Milestone08cTests
+public class UnityEventLinkingTests
 {
     private static readonly string ExpectedEventsPath = Path.Combine(AppContext.BaseDirectory, "Fixtures", "expected-events.json");
 
@@ -251,7 +251,7 @@ public class Milestone08cTests
     // ---- helpers ----------------------------------------------------------------------------
 
     /// <summary>Writes throwaway generated-IDE-shaped csprojs to force semantic mode -- see
-    /// <see cref="Milestone08aTests.WriteSemanticModeCsprojs"/> for the full rationale;
+    /// <see cref="ReferenceCaptureTests.WriteSemanticModeCsprojs"/> for the full rationale;
     /// duplicated locally here rather than shared via a common test helper.</summary>
     private static void WriteSemanticModeCsprojs(string fixtureRoot)
     {
