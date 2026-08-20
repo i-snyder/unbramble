@@ -2,9 +2,9 @@
 
 UnBramble supports Windows x64 and doesn't require a separate .NET installation.
 
-## Install from GitHub
+## Install
 
-Download `unbramble-win-x64.zip` and `unbramble-win-x64.zip.sha256` from the [latest GitHub release](https://github.com/i-snyder/unbramble/releases/latest). In the download directory, verify the archive before extracting it:
+Download `unbramble-win-x64.zip` and `unbramble-win-x64.zip.sha256` from the [latest release](https://github.com/i-snyder/unbramble/releases/latest). In the download directory, verify the ZIP:
 
 ```powershell
 $expected = ((Get-Content ./unbramble-win-x64.zip.sha256 -Raw) -split '\s+')[0]
@@ -12,18 +12,14 @@ $actual = (Get-FileHash ./unbramble-win-x64.zip -Algorithm SHA256).Hash.ToLowerI
 if ($actual -ne $expected) { throw 'Checksum mismatch' }
 ```
 
-Extract every file in the ZIP to a folder you'll keep, such as `C:\Users\your-name\Apps\UnBramble`. Keep all extracted files together. Search the Start menu for **Edit environment variables for your account**, edit the user variable named `Path`, select **New**, and add that folder.
+Extract every file to a folder you'll keep, such as `C:\Users\your-name\Apps\UnBramble`. Search the Start menu for **Edit environment variables for your account**, edit the user variable named `Path`, select **New**, and add that folder.
 
-Open a new terminal at the root of a Unity project and run `unbramble`. The first run walks through project setup and builds the index.
+Open a new terminal at the root of a Unity project and run `unbramble`.
 
-## Upgrade a manual install
+## Update or uninstall
 
-Run `unbramble stop`, then replace every file in the installation directory with the files from the new release ZIP.
+To update, run `unbramble stop`, then replace every file in the installation folder with the new release.
 
-## Uninstall a manual install
+To uninstall, run `unbramble stop`, remove the folder from your user `Path`, and delete it. Project `.unbramble/` indexes remain. If you accepted Defender exclusions, run `unbramble defender remove` from each affected project first.
 
-Run `unbramble stop`, remove the installation directory from your user `PATH`, and delete the directory.
-
-Uninstalling the program doesn't delete project `.unbramble/` indexes. If you accepted optional Windows Defender exclusions, run `unbramble defender remove` from each affected project before uninstalling.
-
-To build from source instead, see [building.md](building.md).
+To build from source, see [building.md](building.md).

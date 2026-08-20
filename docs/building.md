@@ -1,15 +1,15 @@
 # Building UnBramble
 
-Most users should [install a release](installing.md). Build from source when you want to inspect, modify, or contribute to UnBramble.
+Most users should [install a release](installing.md). Build from source to inspect, modify, or contribute to UnBramble.
 
 ## Requirements
 
 - Windows x64
 - PowerShell 7
 - .NET 8 SDK
-- Visual Studio C++ build tools for the preferred NativeAOT publish; the script falls back to a self-contained single-file build when they're unavailable
+- Visual Studio C++ build tools for NativeAOT; without them, the script falls back to a self-contained single-file build
 
-## Clone and verify
+## Build and test
 
 ```powershell
 git clone https://github.com/i-snyder/unbramble.git
@@ -17,24 +17,14 @@ cd unbramble
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-This builds the solution with warnings treated as errors and runs the full test suite. The wrapper selects a complete x64 .NET installation even if an inherited `DOTNET_ROOT` points somewhere incomplete.
+The wrapper selects a complete x64 .NET installation, builds with warnings as errors, and runs the test suite.
 
-## Build a local distribution
-
-For the same publish and smoke-test sequence used for releases:
+For a release-style publish and smoke test, run:
 
 ```powershell
 ./scripts/verify-all.ps1
 ```
 
-The result is written to `publish/`. NativeAOT is attempted first; if the native toolchain is unavailable, the script produces a self-contained single-file managed executable instead. The publish directory contains exactly `unbramble.exe`, the bundled `e_sqlite3.dll`, and one consolidated `LICENSES.md`. Keep those files together.
+`publish/` will contain `unbramble.exe`, `e_sqlite3.dll`, and `LICENSES.md`. For a quick development build, run `dotnet build`.
 
-For a quick development build without publish or smoke tests:
-
-```powershell
-dotnet build
-```
-
-Implementation details and design invariants live in [architecture.md](architecture.md).
-
-Maintainers should follow [releasing.md](releasing.md) to publish a release.
+Read [architecture.md](architecture.md) before changing core behavior. Maintainers should follow [releasing.md](releasing.md).
