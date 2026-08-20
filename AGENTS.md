@@ -61,7 +61,7 @@ Don't change repository visibility until all of these are complete:
 
 Immediately after changing visibility, enable GitHub private vulnerability reporting and secret scanning, then submit `i-snyder.unbramble` to WinGet and follow `docs/releasing.md`.
 
-Dependabot is intentionally not configured. Don't add `.github/dependabot.yml`, automated security fixes, or dependency-update PRs unless the maintainer explicitly asks for them. The Verify workflow checks all direct and transitive NuGet dependencies for known vulnerabilities on every push and pull request.
+Dependabot is intentionally not configured. Don't add `.github/dependabot.yml`, automated security fixes, or dependency-update PRs unless the maintainer explicitly asks for them. The Verify workflow is manual-only for now; run it from GitHub's Actions page or with `gh workflow run Verify`. It checks all direct and transitive NuGet dependencies for known vulnerabilities.
 
 ## Git
 
