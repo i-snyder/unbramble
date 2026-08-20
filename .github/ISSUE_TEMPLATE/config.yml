@@ -2,4 +2,4 @@ blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
     url: https://github.com/i-snyder/unbramble/security/advisories/new
-    about: Report vulnerabilities privately; do not open a public issue.
+    about: Report vulnerabilities privately; don't open a public issue.

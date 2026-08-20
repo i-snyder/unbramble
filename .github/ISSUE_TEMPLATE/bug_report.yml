@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Do not attach proprietary Unity assets, credentials, absolute paths, company/vendor names, or unredacted logs. Security-sensitive reports belong in private vulnerability reporting.
+        Don't attach proprietary Unity assets, credentials, absolute paths, company/vendor names, or unredacted logs. Security-sensitive reports belong in private vulnerability reporting.
   - type: input
     id: version
     attributes:

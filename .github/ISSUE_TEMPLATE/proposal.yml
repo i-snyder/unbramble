@@ -1,5 +1,5 @@
 name: Proposal
-description: Discuss a feature, reference form, or larger change before implementation.
+description: Suggest an improvement or new capability.
 title: "[proposal] "
 labels:
   - enhancement
@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please discuss substantial work before opening a pull request. Do not attach proprietary Unity assets, credentials, absolute paths, company/vendor names, or unredacted logs.
+        Please discuss substantial work before opening a pull request. Don't attach proprietary Unity assets, credentials, absolute paths, company/vendor names, or unredacted logs.
   - type: textarea
     id: problem
     attributes:
@@ -16,39 +16,21 @@ body:
     validations:
       required: true
   - type: textarea
-    id: current
-    attributes:
-      label: Current workaround
-      description: How do you handle this today, and why is that insufficient?
-    validations:
-      required: true
-  - type: textarea
     id: proposal
     attributes:
-      label: Proposed direction
-      description: Describe the smallest useful change. Include synthetic serialization examples when proposing a new reference form.
+      label: Idea
+      description: What would make this better? A rough direction is enough.
     validations:
       required: true
   - type: textarea
-    id: risks
+    id: context
     attributes:
-      label: Correctness and maintenance risks
-      description: What could this misidentify, miss, slow down, or make harder to maintain?
-    validations:
-      required: true
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives considered
-      description: Note simpler commands, documentation changes, or existing tools that might solve the problem.
-    validations:
-      required: true
+      label: Useful context
+      description: Add examples, current workarounds, or synthetic serialization snippets if they help explain the request.
   - type: checkboxes
     id: privacy
     attributes:
       label: Privacy check
       options:
         - label: I removed private project content, names, paths, credentials, and security-sensitive details.
-          required: true
-        - label: I understand that opening a proposal does not guarantee implementation or acceptance of a pull request.
           required: true
