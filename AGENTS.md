@@ -43,7 +43,7 @@ README is a first-time end-user overview — positioning, release setup, and a c
 
 ## Verification
 
-Use the repository wrapper for ordinary verification. It selects a complete x64 .NET installation and neutralizes stale `DOTNET_ROOT` values:
+Use the repository wrapper for ordinary verification. It selects a complete x64 .NET 10 installation and neutralizes stale `DOTNET_ROOT` values:
 
 ```powershell
 ./scripts/verify-all.ps1 -SkipPublish

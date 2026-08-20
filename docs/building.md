@@ -6,7 +6,7 @@ Most users should [install a release](installing.md). Build from source to inspe
 
 - Windows x64
 - PowerShell 7
-- .NET 8 SDK
+- .NET 10 SDK
 - Visual Studio C++ build tools for NativeAOT; without them, the script falls back to a self-contained single-file build
 
 ## Build and test
@@ -17,7 +17,7 @@ cd unbramble
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-The wrapper selects a complete x64 .NET installation, builds with warnings as errors, and runs the test suite.
+The wrapper selects a complete x64 .NET 10 installation, builds with warnings as errors, and runs the test suite.
 
 For a release-style publish and smoke test, run:
 

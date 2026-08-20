@@ -8,7 +8,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $script:failed = @()
 
 # Prefer the standard x64 installation, then try every host discoverable from PATH or DOTNET_ROOT.
-# A stale per-user host may have a newer SDK but no net8.0 runtime, so validate the whole installation
+# A stale per-user host may have a different SDK/runtime mix, so validate the whole installation
 # before selecting it. Invoke that exact executable below; do not rely on PATH after discovery.
 $dotnetCandidates = [Collections.Generic.List[string]]::new()
 $seenDotnetCandidates = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -19,22 +19,23 @@ function Add-DotnetCandidate([string]$Path) {
 }
 
 Add-DotnetCandidate (Join-Path $env:ProgramFiles 'dotnet\dotnet.exe')
+if ($env:DOTNET_ROOT_X64) { Add-DotnetCandidate (Join-Path $env:DOTNET_ROOT_X64 'dotnet.exe') }
+if ($env:DOTNET_ROOT) { Add-DotnetCandidate (Join-Path $env:DOTNET_ROOT 'dotnet.exe') }
 Get-Command dotnet -All -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandType -eq 'Application' } |
     ForEach-Object { Add-DotnetCandidate $_.Source }
-if ($env:DOTNET_ROOT_X64) { Add-DotnetCandidate (Join-Path $env:DOTNET_ROOT_X64 'dotnet.exe') }
-if ($env:DOTNET_ROOT) { Add-DotnetCandidate (Join-Path $env:DOTNET_ROOT 'dotnet.exe') }
 
 foreach ($candidate in $dotnetCandidates) {
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
 
     $candidateRoot = Split-Path -Parent $candidate
     $candidateRuntime = Get-ChildItem (Join-Path $candidateRoot 'shared\Microsoft.NETCore.App') -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSIsContainer -and $_.Name -like '8.*' } |
+        Where-Object { $_.PSIsContainer -and $_.Name -like '10.*' } |
         Sort-Object { [version]$_.Name } -Descending |
         Select-Object -First 1
     $candidateSdk = Get-ChildItem (Join-Path $candidateRoot 'sdk') -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSIsContainer } |
+        Where-Object { $_.PSIsContainer -and $_.Name -like '10.*' } |
+        Sort-Object { [version]$_.Name } -Descending |
         Select-Object -First 1
     if (-not $candidateRuntime -or -not $candidateSdk) { continue }
 
@@ -52,18 +53,18 @@ foreach ($candidate in $dotnetCandidates) {
     if ($dotnetInfoExitCode -eq 0 -and $dotnetInfo -match '(?m)^\s*Architecture:\s*x64\s*$') {
         $script:dotnetExe = $candidate
         $script:dotnetRoot = $candidateRoot
-        $script:net8RuntimeDir = $candidateRuntime
+        $script:net10RuntimeDir = $candidateRuntime
         break
     }
 }
 
 if (-not $script:dotnetExe) {
-    throw 'No complete x64 .NET installation with an SDK and the .NET 8 runtime was found. Install the x64 .NET 8 SDK and rerun this script.'
+    throw 'No complete x64 .NET installation with the .NET 10 SDK and runtime was found. Install the x64 .NET 10 SDK and rerun this script.'
 }
 
 $env:DOTNET_ROOT = $script:dotnetRoot
 $env:DOTNET_ROOT_X64 = $script:dotnetRoot
-Write-Verbose "Using $script:dotnetExe with .NET 8 runtime $($script:net8RuntimeDir.Name)."
+Write-Verbose "Using $script:dotnetExe with .NET 10 runtime $($script:net10RuntimeDir.Name)."
 
 # Keep ordinary query verbs from starting detached workers throughout the shared fixture run.
 # `monitor` is an explicit request and deliberately bypasses this test-only guard.
@@ -135,7 +136,7 @@ if (-not $SkipPublish) {
         $roslynLibrary = $libraryNames | Where-Object { $_ -like 'Microsoft.CodeAnalysis.CSharp/*' } | Select-Object -First 1
         $ilcLibrary = $libraryNames | Where-Object { $_ -like 'Microsoft.DotNet.ILCompiler/*' } | Select-Object -First 1
         $nativeIlcLibrary = $libraryNames | Where-Object { $_ -like 'runtime.win-x64.Microsoft.DotNet.ILCompiler/*' } | Select-Object -First 1
-        $netCoreRuntimeDependency = @($assets.project.frameworks['net8.0'].downloadDependencies) |
+        $netCoreRuntimeDependency = @($assets.project.frameworks['net10.0'].downloadDependencies) |
             Where-Object { $_.name -eq 'Microsoft.NETCore.App.Runtime.win-x64' } |
             Select-Object -First 1
         $netCoreRuntimeVersion = if ($netCoreRuntimeDependency) {
@@ -286,14 +287,14 @@ if (-not $SkipPublish) {
             # Force semantic mode (same throwaway-csproj trick the xUnit suite uses -- real
             # <Reference>/<HintPath> entries pointing at actual on-disk DLLs, since
             # CsModeSelector only counts a reference whose HintPath resolves). MUST be the
-            # actual net8.0 shared runtime (the TFM unbramble.exe itself targets) -- pwsh's own
+            # actual net10.0 shared runtime (the TFM unbramble.exe itself targets) -- pwsh's own
             # bundled runtime directory ([RuntimeEnvironment]::GetRuntimeDirectory() from
             # within pwsh) is a DIFFERENT, incompatible assembly set that silently produces
             # broken/partial semantic resolution (found the hard way: Helper.Handle's
             # method-group conversion failed to resolve against it, wrongly reporting Helper.cs
             # as provenDead).
             $msbuildNs = 'http://schemas.microsoft.com/developer/msbuild/2003'
-            $runtimeDlls = Get-ChildItem -Path $script:net8RuntimeDir.FullName -Filter '*.dll'
+            $runtimeDlls = Get-ChildItem -Path $script:net10RuntimeDir.FullName -Filter '*.dll'
             $referenceXml = ($runtimeDlls | ForEach-Object {
                 $name = [IO.Path]::GetFileNameWithoutExtension($_.Name)
                 "    <Reference Include=`"$name`"><HintPath>$($_.FullName)</HintPath></Reference>"

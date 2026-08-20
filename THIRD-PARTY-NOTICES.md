@@ -8,7 +8,7 @@ Release packages contain one generated `LICENSES.md` with UnBramble's MIT licens
 
 | Component | Version | License | Copyright / source |
 |---|---:|---|---|
-| .NET runtime and NativeAOT | 8.0.x | MIT, with bundled third-party notices | .NET Foundation and contributors; https://github.com/dotnet/runtime |
+| .NET runtime and NativeAOT | 10.0.x | MIT, with bundled third-party notices | .NET Foundation and contributors; https://github.com/dotnet/runtime |
 | Microsoft.CodeAnalysis.CSharp / Common (Roslyn) | 5.6.0 | MIT, with bundled third-party notices | .NET Foundation and contributors; https://github.com/dotnet/roslyn |
 | Microsoft.Data.Sqlite / Core | 10.0.9 | MIT | Microsoft and .NET Foundation contributors; https://github.com/dotnet/efcore |
 | System.Collections.Immutable | 10.0.1 | MIT | .NET Foundation and contributors; https://github.com/dotnet/runtime |

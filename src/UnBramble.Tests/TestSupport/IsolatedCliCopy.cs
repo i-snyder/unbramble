@@ -31,6 +31,12 @@ public sealed class IsolatedCliCopy : IDisposable
         "SQLitePCLRaw.batteries_v2.dll",
         "SQLitePCLRaw.core.dll",
         "SQLitePCLRaw.provider.e_sqlite3.dll",
+    ];
+
+    // These assemblies may be app-local or supplied by the shared framework. Copy them when
+    // present so the helper works across SDK layouts.
+    private static readonly string[] OptionalManagedDependencyFileNames =
+    [
         "System.Collections.Immutable.dll",
         "System.Reflection.Metadata.dll",
     ];
@@ -54,6 +60,15 @@ public sealed class IsolatedCliCopy : IDisposable
         foreach (var fileName in ManagedDependencyFileNames)
         {
             File.Copy(Path.Combine(SourceDir, fileName), Path.Combine(root, fileName));
+        }
+
+        foreach (var fileName in OptionalManagedDependencyFileNames)
+        {
+            var sourcePath = Path.Combine(SourceDir, fileName);
+            if (File.Exists(sourcePath))
+            {
+                File.Copy(sourcePath, Path.Combine(root, fileName));
+            }
         }
 
         File.Copy(

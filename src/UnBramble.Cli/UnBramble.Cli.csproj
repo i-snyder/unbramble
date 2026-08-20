@@ -11,6 +11,9 @@
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Roslyn emits these dependency-level warnings under NativeAOT. The published-binary
+         semantic-analysis smoke tests exercise the affected paths. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3000</WarningsNotAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
