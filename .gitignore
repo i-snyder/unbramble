@@ -2,6 +2,7 @@
 bin/
 obj/
 publish/
+artifacts/
 
 # UnBramble's own index/state (mirrors what it'll gitignore inside a target Unity project)
 *.db

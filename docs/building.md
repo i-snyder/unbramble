@@ -1,6 +1,6 @@
 # Building UnBramble
 
-Most users should [install the release with WinGet](installing.md). Build from source when you want to inspect, modify, or contribute to UnBramble.
+Most users should [install a release](installing.md). Build from source when you want to inspect, modify, or contribute to UnBramble.
 
 ## Requirements
 

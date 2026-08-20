@@ -6,7 +6,7 @@ Keep docs terse, direct, and useful to someone encountering the repository for t
 
 ## Start Here
 
-- `README.md` — first-time user overview, WinGet setup, and feature summary.
+- `README.md` — first-time user overview, release setup, and feature summary.
 - `CONTRIBUTING.md` — contribution scope, privacy rules, and verification requirements.
 - `docs/installing.md` — install, upgrade, uninstall, and manual ZIP instructions.
 - `docs/building.md` — source-build instructions.
@@ -35,7 +35,7 @@ Terse, direct tone throughout (README, architecture, runbook already follow this
 
 No hard-wrapped lines in Markdown: one line per paragraph/list item, let the renderer soft-wrap. Never manually break prose at a column width.
 
-README is a first-time end-user overview — positioning, WinGet setup, and a compact command map. Contributor and implementation details belong in `CONTRIBUTING.md` and `docs/`.
+README is a first-time end-user overview — positioning, release setup, and a compact command map. Contributor and implementation details belong in `CONTRIBUTING.md` and `docs/`.
 
 ## Agent Files
 
@@ -49,15 +49,17 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-580 tests as of this writing. `.github/workflows/verify.yml` is checked in but manually disabled while the repository is private. Run `./scripts/verify-all.ps1` locally before a release or push that changes scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior; it's the authoritative full verification sequence.
+580 tests as of this writing. Run `./scripts/verify-all.ps1` locally before a release or push that changes scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior; it's the authoritative full verification sequence.
 
 ## Public Release
 
 Don't change repository visibility until all of these are complete:
 
-- Publish from sanitized history: either create a clean public repository from the current tree or rewrite and re-audit this repository's private development history.
-- Run `scripts/verify-all.ps1` on the final public snapshot, ensure `.github/workflows/verify.yml` is enabled and passing there, and enable GitHub private vulnerability reporting, CodeQL, secret scanning, the dependency graph, Dependabot alerts, automatic security fixes, and Dependabot updates. `.github/dependabot.yml` is intentionally absent while private; restore NuGet and GitHub Actions update entries when enabling version updates.
-- Complete the release flow in `docs/releasing.md`: publish `unbramble-win-x64.zip` with its SHA-256 checksum and required notices, validate install/upgrade/uninstall through WinGet, and confirm the README's commands resolve.
+- Confirm the repository contains only the sanitized public history and re-audit the final tracked snapshot.
+- Run `scripts/verify-all.ps1`, ensure `.github/workflows/verify.yml` is enabled and passing on the final `main`, and confirm the dependency vulnerability check is clean.
+- Publish `unbramble-win-x64.zip` with its SHA-256 checksum and required notices from the tagged release commit. Confirm the README's initial GitHub ZIP installation path resolves once visibility changes.
+
+Immediately after changing visibility, enable GitHub private vulnerability reporting, CodeQL, secret scanning, the dependency graph, Dependabot alerts, and automatic security fixes. Restore `.github/dependabot.yml` only when version-update PRs are wanted, then submit `i-snyder.unbramble` to WinGet and follow `docs/releasing.md`.
 
 ## Git
 

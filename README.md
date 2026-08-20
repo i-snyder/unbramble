@@ -12,11 +12,7 @@ UnBramble gives coding agents a current, queryable map of how the project fits t
 
 ## Get started
 
-Install UnBramble on Windows with WinGet:
-
-```powershell
-winget install --exact --id i-snyder.unbramble
-```
+Download `unbramble-win-x64.zip` and its checksum from the [latest release](https://github.com/i-snyder/unbramble/releases/latest), verify the checksum, then extract the complete ZIP to a permanent directory on your user `PATH`.
 
 Open a terminal at the root of a Unity project and run:
 
@@ -28,7 +24,7 @@ UnBramble will walk you through setup and grow its index. From there, `unbramble
 
 Setup also adds a small managed instruction block to the project so compatible coding agents know UnBramble is available and when to query it. After that, ask your agent to work normally — you don't need to reintroduce the tool or manually map dependencies for every new session.
 
-UnBramble is self-contained; you don't need .NET or a running Unity Editor. See [installing](docs/installing.md) for upgrades, uninstalling, and the manual ZIP option. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
+UnBramble is self-contained; you don't need .NET or a running Unity Editor. See [installing](docs/installing.md) for checksum verification, upgrades, uninstalling, and WinGet availability. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
 
 ## Why UnBramble?
 
