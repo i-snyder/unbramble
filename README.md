@@ -23,6 +23,13 @@ UnBramble will walk you through setup and grow its index. Setup adds a small man
 
 See [installing](docs/installing.md) for checksum verification, upgrades, and uninstalling. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
 
+## Command map
+
+- `unbramble who-uses <target>` — find what references an asset, file, type, or member.
+- `unbramble uses <target>` — find what an asset or file depends on.
+- `unbramble dead-candidates` — screen for conservatively identified removal candidates.
+- `unbramble --help` — see every command and option.
+
 ## Why should I trust you?
 
 I've worked professionally in games since 2008 and with Unity since 2011. I'm a Unity Certified Instructor, and I've worked with Unity teams ranging from AAA studios to indies.

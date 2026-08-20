@@ -53,13 +53,7 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 
 ## Public Release
 
-Don't change repository visibility until all of these are complete:
-
-- Confirm the repository contains only the sanitized public history and re-audit the final tracked snapshot.
-- Run `scripts/verify-all.ps1`, ensure `.github/workflows/verify.yml` is enabled and passing on the final `main`, and confirm the dependency vulnerability check is clean.
-- Publish `unbramble-win-x64.zip` with its SHA-256 checksum and required notices from the tagged release commit. Confirm the README's initial GitHub ZIP installation path resolves once visibility changes.
-
-Immediately after changing visibility, enable GitHub private vulnerability reporting and secret scanning, then follow `docs/releasing.md`.
+Follow [`docs/releasing.md`](docs/releasing.md) for the complete release and repository-visibility checklist.
 
 Dependabot is intentionally not configured. Don't add `.github/dependabot.yml`, automated security fixes, or dependency-update PRs unless the maintainer explicitly asks for them. The Verify workflow is manual-only for now; run it from GitHub's Actions page or with `gh workflow run Verify`. It checks all direct and transitive NuGet dependencies for known vulnerabilities.
 

@@ -25,6 +25,6 @@ For a release-style publish and smoke test, run:
 ./scripts/verify-all.ps1
 ```
 
-`publish/` will contain `unbramble.exe`, `e_sqlite3.dll`, and `LICENSES.md`. For a quick development build, run `dotnet build`.
+`publish/` will contain the files used to assemble the release package. For a quick development build, run `dotnet build`.
 
 Read [architecture.md](architecture.md) before changing core behavior. Maintainers should follow [releasing.md](releasing.md).
