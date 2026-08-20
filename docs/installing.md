@@ -12,7 +12,7 @@ $actual = (Get-FileHash ./unbramble-win-x64.zip -Algorithm SHA256).Hash.ToLowerI
 if ($actual -ne $expected) { throw 'Checksum mismatch' }
 ```
 
-Extract the complete ZIP to a permanent directory and add that directory to your user `PATH`. Keep all extracted files together.
+Extract every file in the ZIP to a folder you'll keep, such as `C:\Users\your-name\Apps\UnBramble`. Keep all extracted files together. Search the Start menu for **Edit environment variables for your account**, edit the user variable named `Path`, select **New**, and add that folder.
 
 Open a new terminal at the root of a Unity project and run `unbramble`. The first run walks through project setup and builds the index.
 

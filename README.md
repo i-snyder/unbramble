@@ -10,15 +10,17 @@ In a complex Unity project, the real architecture is scattered across C#, scenes
 
 UnBramble gives coding agents a current, queryable map of how the project fits together. They can trace what a change will touch, discover connections that grep and ordinary code search miss, and make better decisions without you walking them through the project first.
 
-## Get started
+## Quick Start
 
-Download `unbramble-win-x64.zip` and its checksum from the [latest release](https://github.com/i-snyder/unbramble/releases/latest), verify the checksum, then extract the complete ZIP to a permanent directory on your user `PATH`.
+1. Download `unbramble-win-x64.zip` and `unbramble-win-x64.zip.sha256` from the [latest release](https://github.com/i-snyder/unbramble/releases/latest).
+2. [Verify the ZIP's checksum](docs/installing.md#install-from-github).
+3. Create a folder you'll keep, such as `C:\Users\your-name\Apps\UnBramble`, and extract every file from the ZIP into it.
+4. Search the Start menu for **Edit environment variables for your account**. Edit the user variable named `Path`, select **New**, add your UnBramble folder, and select **OK**.
+5. Open a new terminal at the root of a Unity project and run:
 
-Open a terminal at the root of a Unity project and run:
-
-```powershell
-unbramble
-```
+   ```powershell
+   unbramble
+   ```
 
 UnBramble will walk you through setup and grow its index. From there, `unbramble --help` shows every path through the hedge.
 
