@@ -31,22 +31,22 @@ if (-not $projectVersion -or $projectVersion -ne $Version) {
 $requiredFiles = @(
     'unbramble.exe',
     'e_sqlite3.dll',
-    'LICENSE',
-    'THIRD-PARTY-NOTICES.md',
-    'ROSLYN-THIRD-PARTY-NOTICES.rtf',
-    'DOTNET-ILCOMPILER-THIRD-PARTY-NOTICES.txt',
-    'DOTNET-NATIVEAOT-THIRD-PARTY-NOTICES.txt',
-    'DOTNET-RUNTIME-THIRD-PARTY-NOTICES.txt',
-    'DOTNET-LICENSE.txt',
-    'SQLitePCLRaw-LICENSE.txt',
-    'SQLitePCLRaw-NOTICE.txt',
-    'Microsoft.Data.Sqlite-LICENSE.txt'
+    'LICENSES.md'
 )
 foreach ($file in $requiredFiles) {
     $path = Join-Path $publishDir $file
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required release file not found: $path"
     }
+}
+
+$publishFiles = @(
+    Get-ChildItem -LiteralPath $publishDir -Recurse -File |
+        ForEach-Object { [IO.Path]::GetRelativePath($publishDir, $_.FullName).Replace('\', '/') } |
+        Sort-Object
+)
+if (Compare-Object -ReferenceObject @($requiredFiles | Sort-Object) -DifferenceObject $publishFiles) {
+    throw "Publish directory must contain exactly: $($requiredFiles -join ', ')"
 }
 
 $pdbFiles = @(Get-ChildItem -LiteralPath $publishDir -Recurse -File -Filter '*.pdb')
@@ -69,13 +69,7 @@ try {
         $false
     )
 
-    $expectedEntries = @(
-        Get-ChildItem -LiteralPath $publishDir -Recurse -File |
-            ForEach-Object {
-                [IO.Path]::GetRelativePath($publishDir, $_.FullName).Replace('\', '/')
-            } |
-            Sort-Object
-    )
+    $expectedEntries = @($requiredFiles | Sort-Object)
     $archive = [IO.Compression.ZipFile]::OpenRead($tempZipPath)
     try {
         $actualEntries = @(

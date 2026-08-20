@@ -95,6 +95,13 @@ if (-not $SkipPublish) {
             Where-Object { $_.Path -and ([IO.Path]::GetFullPath($_.Path) -eq $publishExe) } |
             Stop-Process -Force -ErrorAction SilentlyContinue
 
+        $publishDir = [IO.Path]::GetFullPath((Join-Path $repo 'publish'))
+        $repoPrefix = [IO.Path]::GetFullPath($repo).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+        if (-not $publishDir.StartsWith($repoPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Publish directory escaped the repository: $publishDir"
+        }
+        Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
+
         # Try NativeAOT first (the preferred path). Fall back to a
         # self-contained single-file publish if the local machine is missing native
         # publish tooling (e.g. the VS C++ workload).
@@ -119,8 +126,8 @@ if (-not $SkipPublish) {
             }
         }
 
-        # Assemble the exact notices from the packages this publish resolved. The short checked-in
-        # inventory is useful to humans; these upstream files carry the complete binary notices.
+        # Consolidate the exact notices from the packages this publish resolved. The release keeps
+        # one readable Markdown file instead of exposing the package manager's internal file layout.
         $assetsPath = Join-Path $repo 'src/UnBramble.Cli/obj/project.assets.json'
         $assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json -AsHashtable
         $packageRoot = @($assets.packageFolders.Keys)[0]
@@ -146,30 +153,72 @@ if (-not $SkipPublish) {
             Join-Path $packageRoot (Join-Path $parts[0].ToLowerInvariant() (Join-Path $parts[1].ToLowerInvariant() $relativePath))
         }
 
-        $noticeCopies = @(
-            @{ Source = (Join-Path $repo 'THIRD-PARTY-NOTICES.md'); Destination = 'THIRD-PARTY-NOTICES.md' },
-            @{ Source = (PackagePath $roslynLibrary 'ThirdPartyNotices.rtf'); Destination = 'ROSLYN-THIRD-PARTY-NOTICES.rtf' },
-            @{ Source = (PackagePath $ilcLibrary 'THIRD-PARTY-NOTICES.TXT'); Destination = 'DOTNET-ILCOMPILER-THIRD-PARTY-NOTICES.txt' },
-            @{ Source = (PackagePath $nativeIlcLibrary 'THIRD-PARTY-NOTICES.TXT'); Destination = 'DOTNET-NATIVEAOT-THIRD-PARTY-NOTICES.txt' },
-            @{ Source = (PackagePath $netCoreRuntimeLibrary 'THIRD-PARTY-NOTICES.TXT'); Destination = 'DOTNET-RUNTIME-THIRD-PARTY-NOTICES.txt' },
-            @{ Source = (PackagePath $netCoreRuntimeLibrary 'LICENSE.TXT'); Destination = 'DOTNET-LICENSE.txt' },
-            @{ Source = (Join-Path $repo 'licenses/SQLitePCLRaw-LICENSE.txt'); Destination = 'SQLitePCLRaw-LICENSE.txt' },
-            @{ Source = (Join-Path $repo 'licenses/SQLitePCLRaw-NOTICE.txt'); Destination = 'SQLitePCLRaw-NOTICE.txt' },
-            @{ Source = (Join-Path $repo 'licenses/Microsoft.Data.Sqlite-LICENSE.txt'); Destination = 'Microsoft.Data.Sqlite-LICENSE.txt' }
+        $projectLicense = Join-Path $repo 'LICENSE'
+        $roslynNotice = PackagePath $roslynLibrary 'ThirdPartyNotices.rtf'
+        $dotnetLicense = PackagePath $netCoreRuntimeLibrary 'LICENSE.TXT'
+        $dotnetNotices = @(
+            @{ Title = '.NET runtime third-party notices'; Path = (PackagePath $netCoreRuntimeLibrary 'THIRD-PARTY-NOTICES.TXT') },
+            @{ Title = '.NET NativeAOT third-party notices'; Path = (PackagePath $nativeIlcLibrary 'THIRD-PARTY-NOTICES.TXT') },
+            @{ Title = '.NET ILCompiler third-party notices'; Path = (PackagePath $ilcLibrary 'THIRD-PARTY-NOTICES.TXT') }
         )
-        foreach ($copy in $noticeCopies) {
-            if (-not (Test-Path -LiteralPath $copy.Source)) {
-                throw "Required distribution notice not found: $($copy.Source)"
+        $microsoftDataSqliteLicense = Join-Path $repo 'licenses/Microsoft.Data.Sqlite-LICENSE.txt'
+        $sqlitePclRawLicense = Join-Path $repo 'licenses/SQLitePCLRaw-LICENSE.txt'
+        $sqlitePclRawNotice = Join-Path $repo 'licenses/SQLitePCLRaw-NOTICE.txt'
+        $requiredNoticeSources = @(
+            $projectLicense,
+            $roslynNotice,
+            $dotnetLicense,
+            $microsoftDataSqliteLicense,
+            $sqlitePclRawLicense,
+            $sqlitePclRawNotice
+        ) + @($dotnetNotices.Path)
+        foreach ($source in $requiredNoticeSources) {
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "Required distribution notice not found: $source"
             }
-            Copy-Item -LiteralPath $copy.Source -Destination (Join-Path $repo "publish/$($copy.Destination)") -Force
         }
 
-        $projectLicense = Join-Path $repo 'LICENSE'
-        if (Test-Path -LiteralPath $projectLicense) {
-            Copy-Item -LiteralPath $projectLicense -Destination (Join-Path $repo 'publish/LICENSE') -Force
-        } else {
-            Write-Host '-- Project LICENSE not selected yet; add it before public distribution --' -ForegroundColor Yellow
+        Add-Type -AssemblyName System.Windows.Forms
+        $rtfReader = [Windows.Forms.RichTextBox]::new()
+        try {
+            $rtfReader.Rtf = Get-Content -LiteralPath $roslynNotice -Raw
+            $roslynNoticeText = $rtfReader.Text
+        } finally {
+            $rtfReader.Dispose()
         }
+
+        $licenses = [Text.StringBuilder]::new()
+        [void]$licenses.AppendLine('# UnBramble licenses and notices')
+        [void]$licenses.AppendLine()
+        [void]$licenses.AppendLine('This file contains the license terms and attribution notices for UnBramble and the third-party software included in its Windows release. Duplicate notice texts emitted by multiple resolved .NET packages are included once.')
+
+        function Append-LicenseSection([string]$Title, [string]$Text) {
+            [void]$licenses.AppendLine()
+            [void]$licenses.AppendLine("## $Title")
+            [void]$licenses.AppendLine()
+            [void]$licenses.AppendLine($Text.Trim())
+            [void]$licenses.AppendLine()
+        }
+
+        Append-LicenseSection 'UnBramble' (Get-Content -LiteralPath $projectLicense -Raw)
+        Append-LicenseSection '.NET runtime and NativeAOT' (Get-Content -LiteralPath $dotnetLicense -Raw)
+        $seenDotnetNoticeHashes = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($notice in $dotnetNotices) {
+            $noticeHash = (Get-FileHash -LiteralPath $notice.Path -Algorithm SHA256).Hash
+            if ($seenDotnetNoticeHashes.Add($noticeHash)) {
+                Append-LicenseSection $notice.Title (Get-Content -LiteralPath $notice.Path -Raw)
+            }
+        }
+        Append-LicenseSection 'Roslyn (.NET Compiler Platform)' $roslynNoticeText
+        Append-LicenseSection 'Microsoft.Data.Sqlite' (Get-Content -LiteralPath $microsoftDataSqliteLicense -Raw)
+        Append-LicenseSection 'SQLitePCLRaw — Apache License 2.0' (Get-Content -LiteralPath $sqlitePclRawLicense -Raw)
+        Append-LicenseSection 'SQLitePCLRaw and SQLite notices' (Get-Content -LiteralPath $sqlitePclRawNotice -Raw)
+
+        [IO.File]::WriteAllText(
+            (Join-Path $publishDir 'LICENSES.md'),
+            $licenses.ToString(),
+            [Text.UTF8Encoding]::new($false)
+        )
     }
     Step 'smoke-version' {
         & "$repo/publish/unbramble.exe" --version

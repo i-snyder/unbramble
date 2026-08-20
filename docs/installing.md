@@ -26,14 +26,4 @@ Run `unbramble stop`, remove the installation directory from your user `PATH`, a
 
 Uninstalling the program doesn't delete project `.unbramble/` indexes. If you accepted optional Windows Defender exclusions, run `unbramble defender remove` from each affected project before uninstalling.
 
-## WinGet
-
-After `i-snyder.unbramble` is accepted into WinGet, install, upgrade, or uninstall it with:
-
-```powershell
-winget install --exact --id i-snyder.unbramble
-winget upgrade --exact --id i-snyder.unbramble
-winget uninstall --exact --id i-snyder.unbramble
-```
-
 To build from source instead, see [building.md](building.md).

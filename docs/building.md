@@ -27,7 +27,7 @@ For the same publish and smoke-test sequence used for releases:
 ./scripts/verify-all.ps1
 ```
 
-The result is written to `publish/`. NativeAOT is attempted first; if the native toolchain is unavailable, the script produces a self-contained single-file managed executable instead. The publish directory also contains the bundled native SQLite library, the MIT license, and all required third-party notices. Keep those files together.
+The result is written to `publish/`. NativeAOT is attempted first; if the native toolchain is unavailable, the script produces a self-contained single-file managed executable instead. The publish directory contains exactly `unbramble.exe`, the bundled `e_sqlite3.dll`, and one consolidated `LICENSES.md`. Keep those files together.
 
 For a quick development build without publish or smoke tests:
 
@@ -37,4 +37,4 @@ dotnet build
 
 Implementation details and design invariants live in [architecture.md](architecture.md).
 
-Maintainers should follow [releasing.md](releasing.md) to turn a verified publish into GitHub and WinGet releases.
+Maintainers should follow [releasing.md](releasing.md) to publish a release.

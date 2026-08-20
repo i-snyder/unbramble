@@ -2,7 +2,7 @@
 
 UnBramble uses the components below. This inventory covers the product dependency graph for the versions currently pinned in the repository; test-only packages are omitted because they aren't part of the distributed CLI.
 
-Published binaries must include this file, the checked-in package license/notice texts under `licenses/`, and the exact .NET/NativeAOT and Roslyn notice files copied from the resolved build packages. `scripts/verify-all.ps1` assembles them into `publish/` and fails publication if a required file can't be found.
+Release packages contain one generated `LICENSES.md` with UnBramble's MIT license and all required third-party license and attribution text. `scripts/verify-all.ps1` builds it from the checked-in notices and the exact .NET/NativeAOT and Roslyn packages resolved for that publish, de-duplicating identical notice text.
 
 ## Runtime components
 
@@ -16,7 +16,7 @@ Published binaries must include this file, the checked-in package license/notice
 | SQLitePCLRaw bundle, configuration, core, and provider | 3.0.3 | Apache-2.0 | Copyright 2014-2025 SourceGear, LLC; https://github.com/ericsink/SQLitePCL.raw |
 | SQLite (`e_sqlite3`) | 3.50.4 (`SourceGear.sqlite3` package 3.50.4.5) | Public domain | https://sqlite.org/copyright.html |
 
-The MIT license for Microsoft.Data.Sqlite and the Apache License 2.0 plus upstream NOTICE for SQLitePCLRaw are checked in under `licenses/`. The exact license and attribution notices shipped by the .NET runtime, NativeAOT, and Roslyn are preserved verbatim in every assembled binary distribution.
+The MIT license for Microsoft.Data.Sqlite and the Apache License 2.0 plus upstream NOTICE for SQLitePCLRaw are checked in under `licenses/`. The complete license and attribution text shipped by the .NET runtime, NativeAOT, and Roslyn is preserved in every assembled binary distribution.
 
 ## Design references not distributed with UnBramble
 
