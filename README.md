@@ -19,7 +19,7 @@ It gives coding agents the project-wide dependency context they need to trace th
    unbramble
    ```
 
-UnBramble will walk you through setup and build its index. Setup adds a small managed instruction block to the project so compatible coding agents know UnBramble is available and when to query it. After that, work with your agent normally. It can query the graph when it needs dependency context, without you manually mapping connections for every session.
+UnBramble will walk you through setup and grow its index. Setup adds a small managed instruction block to the project so compatible coding agents know UnBramble is available and when to query it. After that, work with your agent normally. It can find its way through the project whenever it needs dependency context, without you manually mapping connections for every session.
 
 See [installing](docs/installing.md) for checksum verification, upgrades, and uninstalling. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
 
@@ -33,12 +33,12 @@ Its design, known gaps, and tests are open for inspection; see the [architecture
 
 ## Command map
 
-Use the CLI directly or let a compatible coding agent call it:
+Hand the map to your agent or query it yourself:
 
 - `unbramble who-uses <target>` — find what references an asset, file, GUID, type, or member.
 - `unbramble uses <target>` — find what an asset or file depends on.
 - `unbramble dead-candidates` — screen for conservatively identified removal candidates.
-- `unbramble --help` — see every command and option.
+- `unbramble --help` — see every path through the hedge.
 
 Bug reports and focused contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a proposal or pull request, please :)
 
