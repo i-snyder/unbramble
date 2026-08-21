@@ -43,5 +43,4 @@ Use the CLI directly or let a compatible coding agent call it:
 Bug reports and focused contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a proposal or pull request, please :)
 
 All the best,
-
 Ian
