@@ -28,6 +28,13 @@ namespace UnBramble.Cli.Defender;
 /// </summary>
 public static class DefenderExclusionSetup
 {
+    public enum RemovalResult
+    {
+        NothingOwned,
+        Removed,
+        Incomplete,
+    }
+
     public readonly record struct Dependencies(
         IPowerShellRunner PowerShell,
         IDefenderRegistryReader Registry,
@@ -107,18 +114,21 @@ public static class DefenderExclusionSetup
 
     /// <summary>`unbramble defender remove`: elevated removal of exactly the entries this tool
     /// itself recorded as applied -- never a blanket "clear all Defender exclusions."</summary>
-    public static void RunRemove(string projectRoot, Dependencies deps, Action<string> announce)
+    public static RemovalResult RunRemove(string projectRoot, Dependencies deps, Action<string> announce)
     {
         var state = DefenderStateFile.TryRead(projectRoot);
         var toRemove = state?.Entries
-            .Where(e => e.Outcome is "added" or "already-covered")
+            // `already-covered` means the exclusion existed before this setup attempt. It is
+            // useful coverage state, but not ownership: uninstall must never remove it.
+            .Where(e => e.Outcome == "added")
             .Select(e => new DefenderEntry(DefenderEntry.ParseType(e.Type), e.Value))
             .ToList();
 
         if (toRemove is null || toRemove.Count == 0)
         {
-            announce("Defender exclusions: nothing recorded for this project -- nothing to remove.");
-            return;
+            DefenderStateFile.Delete(projectRoot);
+            announce("Defender exclusions: nothing added by unbramble -- nothing to remove.");
+            return RemovalResult.NothingOwned;
         }
 
         announce($"Removing {toRemove.Count} Defender exclusion entr{(toRemove.Count == 1 ? "y" : "ies")} added by unbramble:");
@@ -136,14 +146,14 @@ public static class DefenderExclusionSetup
 
         if (!AnnounceElevationFailureIfAny(elevation, announce))
         {
-            return;
+            return RemovalResult.Incomplete;
         }
 
         var resultRead = DefenderResultFile.TryRead(resultPath);
         if (resultRead is null)
         {
             announce("Windows Defender: the elevated removal step finished but no result could be read back -- check Windows Security > Virus & threat protection > Exclusions manually.");
-            return;
+            return RemovalResult.Incomplete;
         }
 
         foreach (var r in resultRead.Value.Results)
@@ -156,12 +166,12 @@ public static class DefenderExclusionSetup
         {
             DefenderStateFile.Delete(projectRoot);
             announce("Defender exclusions: removed. Re-offer any time with 'unbramble defender setup'.");
+            return RemovalResult.Removed;
         }
-        else
-        {
-            announce("Defender exclusions: some entries could not be removed (see above) -- this machine's " +
-                "exclusions may be managed/tamper-protected. Recorded state left as-is.");
-        }
+
+        announce("Defender exclusions: some entries could not be removed (see above) -- this machine's " +
+            "exclusions may be managed/tamper-protected. Recorded state left as-is.");
+        return RemovalResult.Incomplete;
     }
 
     private static void Run(

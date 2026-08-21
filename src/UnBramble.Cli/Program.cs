@@ -305,6 +305,7 @@ public static class Program
                 "watch-worker" => RunWatchWorker(rest),
                 "monitor" => RunMonitor(rest),
                 "stop" => RunStop(rest),
+                "uninstall" => RunUninstall(rest),
                 "defender" => RunDefender(rest),
 
                 // A bare `unbramble <path>` (no verb) is the same home command as zero args,
@@ -456,11 +457,13 @@ public static class Program
         UnBrambleEngine engine, bool announce, bool setUpAgents,
         bool interactive, bool forceDefenderPrompt = false, bool skipDefender = false)
     {
+        var setupCapture = ProjectInstallation.CaptureSetup(engine.ProjectRoot, setUpAgents);
         SetUpIgnoreFiles(engine.ProjectRoot, json: !announce);
         if (setUpAgents)
         {
             AgentInstructionsSetup.SetUp(engine.ProjectRoot, Version, line => { if (announce) WriteSetupLine(line); });
         }
+        setupCapture.Commit();
 
         // Defender setup: offered BEFORE the first sweep so the very first cold index is already
         // fast, not just subsequent ones -- gated on `announce` the same way the
@@ -2486,8 +2489,9 @@ public static class Program
         }
 
         var (projectRoot, _) = resolved.Value;
-        DefenderExclusionSetup.RunRemove(projectRoot, DefenderExclusionSetup.Dependencies.CreateReal(), Console.WriteLine);
-        return 0;
+        var result = DefenderExclusionSetup.RunRemove(
+            projectRoot, DefenderExclusionSetup.Dependencies.CreateReal(), Console.WriteLine);
+        return result == DefenderExclusionSetup.RemovalResult.Incomplete ? 1 : 0;
     }
 
     /// <summary>
@@ -2754,7 +2758,132 @@ public static class Program
     private static int RunStop(string[] rest)
     {
         var reader = ArgReader.Parse(rest, [], []);
+        return StopAllProcesses(reader.ResolveStartPath());
+    }
+
+    /// <summary>Detaches one Unity project cleanly, or removes the manual ZIP installation from
+    /// this machine with <c>--machine</c>. Both paths print an exact plan and require explicit
+    /// confirmation before their first mutation.</summary>
+    private static int RunUninstall(string[] rest)
+    {
+        var reader = ArgReader.Parse(rest, "--machine", "--yes", "-y");
+        if (reader.HasFlag("--machine"))
+        {
+            return RunMachineUninstall(reader);
+        }
+
         var startPath = reader.ResolveStartPath();
+        var projectRoot = ProjectDetector.FindProjectRoot(startPath);
+        if (projectRoot is null)
+        {
+            WriteError($"no Unity project found starting from '{startPath}' (no ProjectSettings/ProjectVersion.txt)");
+            return 1;
+        }
+
+        Console.WriteLine($"This will remove UnBramble from this Unity project: {projectRoot}");
+        Console.WriteLine("  - stop every live UnBramble process across all projects");
+        Console.WriteLine("  - remove Defender exclusions that UnBramble added for this project");
+        Console.WriteLine("  - restore or clean UnBramble's AGENTS.md, CLAUDE.md, and VCS-ignore changes");
+        Console.WriteLine($"  - permanently delete {UnBramblePaths.StateDirName}/ and its generated index");
+        Console.WriteLine("The UnBramble CLI will remain installed on this machine.");
+        var confirmation = ConfirmUninstall(reader.HasFlag("--yes") || reader.HasFlag("-y"));
+        if (confirmation != ConfirmationResult.Accepted)
+        {
+            return confirmation == ConfirmationResult.Declined ? 0 : 1;
+        }
+
+        // The process-wide test guard exists because CliRunner hosts Program.Main inside the
+        // shared testhost process. Real-process stop tests exercise StopAllProcesses directly
+        // through the published CLI name instead.
+        if (Environment.GetEnvironmentVariable("UNBRAMBLE_DISABLE_PROCESS_STOP") != "1")
+        {
+            var stopResult = StopAllProcesses(projectRoot);
+            if (stopResult != 0)
+            {
+                return stopResult;
+            }
+        }
+
+        var defenderResult = DefenderExclusionSetup.RunRemove(
+            projectRoot, DefenderExclusionSetup.Dependencies.CreateReal(), Console.WriteLine);
+        if (defenderResult == DefenderExclusionSetup.RemovalResult.Incomplete)
+        {
+            WriteError("uninstall stopped before changing project files because Defender cleanup did not complete; retry the command to finish.");
+            return 1;
+        }
+
+        var result = ProjectInstallation.Uninstall(projectRoot, Console.WriteLine);
+        Console.WriteLine(result.Changed
+            ? $"UnBramble removed from {projectRoot}."
+            : $"UnBramble was not set up in {projectRoot}; nothing to remove.");
+        if (!result.ExactRollback)
+        {
+            Console.WriteLine("UnBramble-owned entries were removed while later edits and unrelated project content were preserved.");
+        }
+
+        var installDirectory = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
+        Console.WriteLine($"The UnBramble CLI remains installed at {installDirectory}.");
+        Console.WriteLine("After cleaning every project, run 'unbramble uninstall --machine' to remove it completely from this machine.");
+        return 0;
+    }
+
+    private static int RunMachineUninstall(ArgReader reader)
+    {
+        if (reader.Positional is not null || reader.Path is not null)
+        {
+            WriteError("'uninstall --machine' does not accept a project path; clean projects separately with 'unbramble uninstall [path]'.");
+            return 1;
+        }
+
+        var executablePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(executablePath))
+        {
+            WriteError("could not determine this process's own executable path.");
+            return 1;
+        }
+
+        var userPath = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User);
+        var plan = MachineUninstaller.Inspect(executablePath, userPath);
+        Console.WriteLine("This will remove UnBramble from this machine:");
+        Console.WriteLine("  - stop every live UnBramble process across all projects");
+        Console.WriteLine($"  - installation directory: {plan.InstallDirectory}");
+        Console.WriteLine(plan.RemovedPathEntries > 0
+            ? $"  - remove {plan.RemovedPathEntries} matching entr{(plan.RemovedPathEntries == 1 ? "y" : "ies")} for that directory from your user Path"
+            : "  - user Path: no matching entry was found, so it will not be changed");
+        Console.WriteLine("  - permanently delete the entire installation directory after this process exits");
+        Console.WriteLine("Unity project integrations are not discovered or removed by this command; run 'unbramble uninstall' in each project first.");
+        var confirmation = ConfirmUninstall(reader.HasFlag("--yes") || reader.HasFlag("-y"));
+        if (confirmation != ConfirmationResult.Accepted)
+        {
+            return confirmation == ConfirmationResult.Declined ? 0 : 1;
+        }
+
+        var stopResult = StopAllProcesses(Directory.GetCurrentDirectory());
+        if (stopResult != 0)
+        {
+            return stopResult;
+        }
+
+        MachineUninstaller.Execute(plan, MachineUninstaller.Dependencies.CreateReal());
+        Console.WriteLine(plan.RemovedPathEntries > 0
+            ? "User Path updated."
+            : "User Path unchanged.");
+        Console.WriteLine($"UnBramble will delete '{plan.InstallDirectory}' after this process exits.");
+        return 0;
+    }
+
+    private static ConfirmationResult ConfirmUninstall(bool assumeYes) =>
+        UninstallConfirmation.Ask(
+            assumeYes,
+            new UninstallConfirmation.Environment(
+                ConsoleCapabilities.IsInteractive,
+                ConsoleCapabilities.SupportsAnsi,
+                Console.ReadLine,
+                Console.WriteLine,
+                WriteError));
+
+    private static int StopAllProcesses(string startPath)
+    {
 
         var exePath = Environment.ProcessPath;
         if (string.IsNullOrEmpty(exePath))
@@ -3079,6 +3208,8 @@ public static class Program
               unbramble index [path] [--full] [--json]
               unbramble monitor [path]
               unbramble stop
+              unbramble uninstall [path] [-y|--yes]       (remove UnBramble from one Unity project)
+              unbramble uninstall --machine [-y|--yes]    (remove the manual installation from this machine)
               unbramble defender status [path]
               unbramble defender setup [path]
               unbramble defender remove [path]
@@ -3116,6 +3247,7 @@ public static class Program
             "index" => "unbramble index [path] [--full] [--json] [--verbose]",
             "monitor" => "unbramble monitor [path]",
             "stop" => "unbramble stop",
+            "uninstall" => "unbramble uninstall [path] [-y|--yes] | unbramble uninstall --machine [-y|--yes]",
             "defender" => "unbramble defender <status|setup|remove> [path]",
             "who-uses" => "unbramble who-uses <path|guid|symbol> [--guids file] [--symbol] [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--json|--jsonl] [--verbose]",
             "uses" => "unbramble uses <path|guid> [--missing-only] [--paths file] [--summary|--group-by-target] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]",

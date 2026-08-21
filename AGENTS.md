@@ -49,7 +49,7 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-580 tests as of this writing. Run `./scripts/verify-all.ps1` locally before pushing changes to scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior.
+600 tests as of this writing. Run `./scripts/verify-all.ps1` locally before pushing changes to scanning, parsing, storage, monitoring, liveness, publishing, or smoke-test behavior.
 
 ## Public Release
 

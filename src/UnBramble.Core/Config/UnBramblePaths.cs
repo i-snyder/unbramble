@@ -3,10 +3,10 @@ namespace UnBramble.Core.Config;
 /// <summary>
 /// Single source of truth for UnBramble's own project-root state directory (`.unbramble/`) and
 /// the well-known file names inside it: the SQLite DB, the watcher heartbeat, the watcher and
-/// finite index-writer locks, the watch-status snapshot, and the two auto-spawn marker files. Centralized here --
+/// finite index-writer locks, the watch-status snapshot, setup rollback receipt, and auto-spawn marker files. Centralized here --
 /// rather than each consumer (<c>HeartbeatFile</c>, <c>WatcherLock</c>, <c>WatchStatusFile</c>,
 /// <c>AutoWatchMarkers</c>, <see cref="UnBrambleConfig"/>) carrying its own copy of the directory
-/// name -- so those six paths can never drift apart on the directory name, and relocating the
+/// name -- so those paths can never drift apart on the directory name, and relocating the
 /// state directory again in the future is a one-line change.
 ///
 /// Deliberately lives at the project root, not under `Library/`: the auto-spawn watcher runs
@@ -31,6 +31,7 @@ public static class UnBramblePaths
     public const string WatchStatusFileName = "watch.status.json";
     public const string LastQueryFileName = "watch.lastquery";
     public const string SpawnAttemptFileName = "auto-spawn.lastattempt";
+    public const string ProjectInstallStateFileName = "project-install.json";
 
     /// <summary>
     /// Append-only JSON-lines history of every completed <c>RunIndex</c> pass (<see

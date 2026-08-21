@@ -245,6 +245,8 @@ unbramble init [path] [--no-agents]  first run: build the index, write AGENTS.md
 unbramble index [path] [--full]    explicit refresh / rebuild
 unbramble monitor [path]           ensure the background watcher exists and show live progress
 unbramble stop                     stop live unbramble background processes
+unbramble uninstall [path] [-y|--yes]       remove UnBramble's integration and generated state from one project
+unbramble uninstall --machine [-y|--yes]    remove the manual ZIP installation from this machine
 unbramble defender status|setup|remove [path]   Windows Defender exclusion setup (see README)
 unbramble who-uses <path|guid|symbol> [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix]
 unbramble who-uses --guids <file> [--json|--jsonl]
@@ -256,7 +258,7 @@ unbramble stats [path] [--unresolved] [--collisions]
 unbramble dead-candidates [path] [--json] [--include-advisory] [--kind assets|cs|all]
 ```
 
-Every verb supports `--help`, `--json` for machine consumption, and `-p/--path` to point at a project without `cd`-ing into it. Query paths normalize `\` to `/` at the engine boundary, so paths copied from Windows tools work identically to Unity-style paths.
+Every public verb supports `--help` and `-p/--path` where a project is relevant. Data-producing verbs support `--json` for machine consumption. Query paths normalize `\` to `/` at the engine boundary, so paths copied from Windows tools work identically to Unity-style paths.
 
 **Missing-reference audit workflow:** `uses <asset> --missing-only` returns owner GameObject, component/script, serialized property path, prefab override/source context, `m_Script` classification, and source build reachability for each unresolved link. `--summary` / `--group-by-target` collapses repeated target keys while retaining distinct owner fields/components/objects/source prefabs and counts; `--top N` limits groups; `--build-reachable-only` filters noisy dead/sample sources. `audit-assets <paths-file> --missing` runs the same query for many assets after one freshness snapshot and one reachability load; `uses --missing-only --paths <file>` is an exact alias. `who-uses --guids <file>` does the same for reverse GUID lookups. Batch commands report per-target progress on stderr and support JSONL so automation receives one complete object per target without corrupting stdout JSON.
 
@@ -268,7 +270,16 @@ Every verb supports `--help`, `--json` for machine consumption, and `-p/--path` 
 - Layout is deliberately gated separately from color (`SupportsAnsi`): `NO_COLOR` in a real terminal still wants wrapped, aligned prose, just uncolorized. Width is read live (not cached like the color capabilities) because a terminal can be resized under a long-lived `watch`.
 - `TextWrap` measures *visible* width — escape codes occupy no columns — and only ever breaks at a space between words, so a line can never end mid-escape-sequence and print the tail as literal garbage.
 
-**Agent discovery: `AGENTS.md` / `CLAUDE.md`.** UnBramble has no MCP server and injects nothing into any agent's context, so a fresh coding-agent session has no way to learn it exists. `init` closes that gap by writing static instruction files at the project root (`AgentInstructionsSetup`): an idempotent, version-stamped, marker-delimited block (`<!-- unbramble:begin/end -->`) upserted into `AGENTS.md` on every run, plus a one-line `CLAUDE.md` shim pointing at it — created only if `CLAUDE.md` doesn't exist yet; if it exists and already references `AGENTS.md` it's left alone, and if it has other content and no such reference it's never touched (a user's `CLAUDE.md` is their own prompt surface). A pre-existing hand-written `## unbramble` section with no markers is migrated into the managed block in place, once. Opt out with `init --no-agents`.
+### Agent integration and project footprint
+
+UnBramble is intentionally an ordinary local CLI with a small, explicit footprint:
+
+- **No agent runtime integration.** UnBramble makes no AI/model calls, creates no embeddings, exposes no MCP server, installs no agent hooks, and performs no runtime or per-turn prompt/context injection. The background watcher only maintains the local filesystem index.
+- **Static discovery only.** A fresh coding-agent session otherwise has no way to learn UnBramble exists, so `init` upserts an idempotent, version-stamped, marker-delimited block (`<!-- unbramble:begin/end -->`) into project-root `AGENTS.md`.
+- **User prompt surfaces remain user-owned.** If `CLAUDE.md` doesn't exist, `init` creates a small shim pointing at `AGENTS.md`. An existing file that already references `AGENTS.md` is left alone; an existing file with other content and no reference is never edited. A pre-existing hand-written `## unbramble` section in `AGENTS.md` is migrated into the managed block once; all other content is preserved.
+- **Setup is deliberate, announced, and reversible.** Instruction and VCS-ignore edits happen only during `init`, never during a query or watcher pass. Setup records a small rollback receipt under `.unbramble/`: unchanged files return to their prior bytes during uninstall; if the user edited around UnBramble's content, only recognizable owned content is removed. `init --no-agents` skips agent-file setup but doesn't remove an existing managed block.
+- **Generated state is contained.** Index, watcher, and Defender bookkeeping lives under project-root `.unbramble/`; `init` adds an appropriate VCS-ignore entry when Git or Plastic SCM is detected. Indexing and queries never modify Unity assets or source files. Defender exclusions are offered only with explicit consent and are removable with `unbramble defender remove`.
+- **Removal is bounded and explicit.** `unbramble uninstall [path]` first lists its exact effects and asks for confirmation, then stops all live UnBramble processes, removes only Defender exclusions recorded as added by UnBramble, restores or surgically cleans project setup files, and deletes `.unbramble/`. After projects are clean, `unbramble uninstall --machine` separately confirms the exact user-`Path` and install-directory removal, stops all live UnBramble processes, updates `Path`, and launches a one-shot helper to delete the tightly validated manual-install directory after the running executable exits. Both accept `-y` or `--yes` for deliberate non-interactive use. See [installing](installing.md).
 
 **Exit codes**: `0` = the command/query executed successfully, including when a missing-reference query found broken links; `1` = environment/usage error (not a Unity project, Force Text off, bad args, or `dead-candidates`' liveness-unavailable gate); `2` = query target not found/ambiguous; `3` = findings were present and the caller explicitly requested the CI gate with `--fail-if-found`. Findings are data, not tool failure, unless the caller opts into that policy.
 

@@ -594,8 +594,9 @@ public class DefenderExclusionSetupTests
             var (lines, announce) = Recorder();
             var elevator = new FixedElevator(new ElevatedLaunchResult(ElevatedLaunchOutcome.Completed, 0, null));
 
-            DefenderExclusionSetup.RunRemove(root, HealthyDeps(elevator), announce);
+            var result = DefenderExclusionSetup.RunRemove(root, HealthyDeps(elevator), announce);
 
+            Assert.Equal(DefenderExclusionSetup.RemovalResult.NothingOwned, result);
             Assert.Empty(elevator.Scripts);
             Assert.Contains(lines, l => l.Contains("nothing to remove", StringComparison.OrdinalIgnoreCase));
         }
@@ -619,11 +620,62 @@ public class DefenderExclusionSetupTests
             var (lines, announce) = Recorder();
             var elevator = new SimulatedElevator(root, entries => [.. entries.Select(e => new DefenderEntryResult(e, DefenderEntryOutcome.Removed))]);
 
-            DefenderExclusionSetup.RunRemove(root, HealthyDeps(elevator, exePath), announce);
+            var result = DefenderExclusionSetup.RunRemove(root, HealthyDeps(elevator, exePath), announce);
 
+            Assert.Equal(DefenderExclusionSetup.RemovalResult.Removed, result);
             Assert.Single(elevator.Scripts);
             Assert.Contains(lines, l => l.Contains("removed", StringComparison.OrdinalIgnoreCase));
             Assert.Null(DefenderStateFile.TryRead(root));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void RunRemove_AlreadyCoveredEntry_IsNotOwnedAndIsNeverRemoved()
+    {
+        var root = CreateTempProjectRoot();
+        try
+        {
+            var entry = new DefenderEntry(DefenderEntryType.Path, Path.GetFullPath(root));
+            DefenderStateFile.Write(
+                root, DefenderDecision.Applied, @"C:\tools\unbramble.exe",
+                [new DefenderEntryResult(entry, DefenderEntryOutcome.AlreadyCovered)]);
+            var elevator = new FixedElevator(new ElevatedLaunchResult(ElevatedLaunchOutcome.Completed, 0, null));
+            var (_, announce) = Recorder();
+
+            var result = DefenderExclusionSetup.RunRemove(root, HealthyDeps(elevator), announce);
+
+            Assert.Equal(DefenderExclusionSetup.RemovalResult.NothingOwned, result);
+            Assert.Empty(elevator.Scripts);
+            Assert.Null(DefenderStateFile.TryRead(root));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void RunRemove_DismissedElevation_LeavesReceiptForSafeRetry()
+    {
+        var root = CreateTempProjectRoot();
+        try
+        {
+            var entry = new DefenderEntry(DefenderEntryType.Path, Path.GetFullPath(root));
+            DefenderStateFile.Write(
+                root, DefenderDecision.Applied, @"C:\tools\unbramble.exe",
+                [new DefenderEntryResult(entry, DefenderEntryOutcome.Added)]);
+            var elevator = new FixedElevator(new ElevatedLaunchResult(ElevatedLaunchOutcome.UserCancelled, -1, null));
+            var (_, announce) = Recorder();
+
+            var result = DefenderExclusionSetup.RunRemove(root, HealthyDeps(elevator), announce);
+
+            Assert.Equal(DefenderExclusionSetup.RemovalResult.Incomplete, result);
+            Assert.Single(elevator.Scripts);
+            Assert.NotNull(DefenderStateFile.TryRead(root));
         }
         finally
         {

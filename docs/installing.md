@@ -16,10 +16,28 @@ Extract every file to a folder you'll keep, such as `C:\Users\your-name\Apps\UnB
 
 Open a new terminal at the root of a Unity project and run `unbramble`.
 
-## Update or uninstall
+## Update
 
 To update, run `unbramble stop`, then replace every file in the installation folder with the new release.
 
-To uninstall, run `unbramble stop`, remove the folder from your user `Path`, and delete it. Project `.unbramble/` indexes remain. If you accepted Defender exclusions, run `unbramble defender remove` from each affected project first.
+## Uninstall
+
+Run this once in each Unity project where you set up UnBramble:
+
+```powershell
+unbramble uninstall
+```
+
+The command stops every live UnBramble process across all projects, removes Defender exclusions that UnBramble added for this project, restores or cleans its `AGENTS.md`, `CLAUDE.md`, and VCS-ignore changes, then deletes `.unbramble/`. Unrelated content and edits made after setup are preserved. If the Defender administrator prompt is dismissed or cleanup can't be confirmed, uninstall stops before changing project files so you can retry safely.
+
+Before changing anything, the command lists exactly what it will remove and asks for confirmation. Use `-y` or `--yes` only when deliberately running it non-interactively.
+
+After cleaning every project, remove the CLI itself:
+
+```powershell
+unbramble uninstall --machine
+```
+
+The machine command shows the exact installation directory and user `Path` change, asks for confirmation, stops all live UnBramble processes, removes the matching `Path` entry, then deletes the installation directory after the running process exits. It refuses to recursively delete a directory containing anything outside the known release files. UnBramble doesn't install agent hooks or modify Unity assets or source files, so nothing else needs to be unwound.
 
 To build from source, see [building.md](building.md).
