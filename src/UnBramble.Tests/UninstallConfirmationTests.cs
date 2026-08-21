@@ -30,7 +30,7 @@ public class UninstallConfirmationTests
             new UninstallConfirmation.Environment(true, false, () => answer, lines.Add, lines.Add));
 
         Assert.Equal(ConfirmationResult.Declined, result);
-        Assert.Contains("Cancelled. Nothing changed.", lines);
+        Assert.Contains("Confirmation: cancelled; nothing changed.", lines);
     }
 
     [Fact]
@@ -40,11 +40,11 @@ public class UninstallConfirmationTests
         var read = false;
         var result = UninstallConfirmation.Ask(
             assumeYes: true,
-            new UninstallConfirmation.Environment(true, false, () => { read = true; return "n"; }, lines.Add, lines.Add));
+            new UninstallConfirmation.Environment(true, true, () => { read = true; return "n"; }, lines.Add, lines.Add));
 
         Assert.Equal(ConfirmationResult.Accepted, result);
         Assert.False(read);
-        Assert.Contains("Confirmation accepted (-y/--yes).", lines);
+        Assert.Contains(lines, line => line.Contains("\x1b[", StringComparison.Ordinal) && line.Contains("accepted", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -57,6 +57,6 @@ public class UninstallConfirmationTests
 
         Assert.Equal(ConfirmationResult.Unavailable, result);
         Assert.Single(errors);
-        Assert.Contains("rerun with --yes", errors[0]);
+        Assert.Contains("with -y or --yes", errors[0]);
     }
 }

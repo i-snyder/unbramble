@@ -131,10 +131,10 @@ public static class DefenderExclusionSetup
             return RemovalResult.NothingOwned;
         }
 
-        announce($"Removing {toRemove.Count} Defender exclusion entr{(toRemove.Count == 1 ? "y" : "ies")} added by unbramble:");
+        announce($"Defender exclusions: removing {toRemove.Count} entr{(toRemove.Count == 1 ? "y" : "ies")} added by unbramble:");
         foreach (var entry in toRemove)
         {
-            announce($"  {entry.TypeString,-7} {entry.Value}");
+            announce(FormatEntryLine(entry, outcome: null, error: null, gap: " "));
         }
 
         var planPath = DefenderPlanFile.PathFor(projectRoot);

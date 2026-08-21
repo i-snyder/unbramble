@@ -29,7 +29,7 @@ public class UninstallCommandTests
         Assert.Equal(originalGitignore, File.ReadAllBytes(gitignorePath));
         Assert.Equal(originalClaude, File.ReadAllBytes(claudePath));
         Assert.False(Directory.Exists(UnBramblePaths.StateDirFor(fixture.Root)));
-        Assert.Contains("UnBramble removed", uninstall.StdOut);
+        Assert.Contains("Uninstall: complete", uninstall.StdOut);
         Assert.Contains("unbramble uninstall --machine", uninstall.StdOut);
     }
 
@@ -100,6 +100,9 @@ public class UninstallCommandTests
 
             Assert.Equal(1, exitCode);
             Assert.Contains("no Unity project found", stdErr);
+            Assert.Contains(
+                $"{Environment.NewLine}If you want to uninstall UnBramble from this machine, run 'unbramble uninstall --machine'.{Environment.NewLine}",
+                stdErr);
             Assert.True(File.Exists(sentinel));
         }
         finally
@@ -119,8 +122,8 @@ public class UninstallCommandTests
         var (exitCode, stdOut, stdErr) = CliRunner.Run("uninstall", "-p", fixture.Root);
 
         Assert.Equal(1, exitCode);
-        Assert.Contains("This will remove UnBramble", stdOut);
-        Assert.Contains("rerun with --yes", stdErr);
+        Assert.Contains("Uninstall project", stdOut);
+        Assert.Contains("with -y or --yes", stdErr);
         Assert.DoesNotContain("error: error:", stdErr);
         Assert.True(Directory.Exists(stateDir));
         Assert.Contains("unbramble:begin", File.ReadAllText(agentsPath));
@@ -135,7 +138,7 @@ public class UninstallCommandTests
         var uninstall = CliRunner.Run("uninstall", "-p", fixture.Root, "-y");
 
         AssertSuccess(uninstall);
-        Assert.Contains("Confirmation accepted (-y/--yes).", uninstall.StdOut);
+        Assert.Contains("Confirmation: accepted (-y/--yes).", uninstall.StdOut);
         Assert.False(Directory.Exists(UnBramblePaths.StateDirFor(fixture.Root)));
     }
 

@@ -120,10 +120,9 @@ public static class Program
     }
 
     /// <summary>
-    /// The one styled writer every `init`/first-run setup step reports through -- the ignore-file
-    /// rules, the agent-instruction files, and the whole Defender exchange, all of which already
-    /// take an <c>Action&lt;string&gt;</c> writer, so they share this one and come out looking
-    /// like one process instead of three subsystems each announcing itself differently.
+    /// The one styled writer every setup/teardown step reports through -- ignore-file rules,
+    /// agent instructions, Defender changes, and uninstall progress all share this one so they
+    /// come out looking like one process instead of separate subsystems announcing themselves.
     ///
     /// Styling is inferred rather than passed in, because these lines are written by code that
     /// shouldn't have to know about a palette. They already share a "<c>Subject: what happened</c>"
@@ -202,6 +201,31 @@ public static class Program
         if (subject == "Windows Defender setup" && body.StartsWith("done.", StringComparison.Ordinal))
         {
             return AnsiStyle.Alive("done.", ansi) + body[5..];
+        }
+
+        if (subject is "Processes" or "Defender exclusions" or "Project setup" or "Project state" or "Uninstall" or "User Path")
+        {
+            foreach (var verb in new[] { "stopped", "removed", "restored", "complete", "scheduled", "updated" })
+            {
+                if (body.StartsWith(verb, StringComparison.Ordinal))
+                {
+                    return AnsiStyle.Alive(verb, ansi) + body[verb.Length..];
+                }
+            }
+        }
+
+        if ((subject == "Processes" && body.StartsWith("none ", StringComparison.Ordinal))
+            || (subject == "User Path" && body.StartsWith("unchanged", StringComparison.Ordinal))
+            || (subject == "Uninstall" && body.StartsWith("nothing ", StringComparison.Ordinal))
+            || (subject == "CLI" && body.StartsWith("remains ", StringComparison.Ordinal)))
+        {
+            return AnsiStyle.Muted(body, ansi);
+        }
+
+        const string permanentDelete = "permanently delete";
+        if (body.StartsWith(permanentDelete, StringComparison.Ordinal))
+        {
+            return AnsiStyle.Caution(permanentDelete, ansi) + body[permanentDelete.Length..];
         }
 
         return body;
@@ -2777,20 +2801,28 @@ public static class Program
         if (projectRoot is null)
         {
             WriteError($"no Unity project found starting from '{startPath}' (no ProjectSettings/ProjectVersion.txt)");
+            WriteParagraph(
+                AnsiStyle.InlineCommands(
+                    "If you want to uninstall UnBramble from this machine, run 'unbramble uninstall --machine'.",
+                    ConsoleCapabilities.SupportsAnsi),
+                writer: Console.Error);
             return 1;
         }
 
-        Console.WriteLine($"This will remove UnBramble from this Unity project: {projectRoot}");
-        Console.WriteLine("  - stop every live UnBramble process across all projects");
-        Console.WriteLine("  - remove Defender exclusions that UnBramble added for this project");
-        Console.WriteLine("  - restore or clean UnBramble's AGENTS.md, CLAUDE.md, and VCS-ignore changes");
-        Console.WriteLine($"  - permanently delete {UnBramblePaths.StateDirName}/ and its generated index");
-        Console.WriteLine("The UnBramble CLI will remain installed on this machine.");
+        WriteUninstallHeading("Uninstall project");
+        WriteSetupLine($"Project: {projectRoot}");
+        WriteSetupLine("Processes: stop every live UnBramble process across all projects");
+        WriteSetupLine("Defender exclusions: remove entries UnBramble added for this project");
+        WriteSetupLine("Project setup: restore or clean UnBramble's AGENTS.md, CLAUDE.md, and VCS-ignore changes");
+        WriteSetupLine($"Project state: permanently delete {UnBramblePaths.StateDirName}/ and its generated index");
+        WriteSetupLine("CLI: remains installed on this machine");
+        WriteSpacer();
         var confirmation = ConfirmUninstall(reader.HasFlag("--yes") || reader.HasFlag("-y"));
         if (confirmation != ConfirmationResult.Accepted)
         {
             return confirmation == ConfirmationResult.Declined ? 0 : 1;
         }
+        WriteSpacer();
 
         // The process-wide test guard exists because CliRunner hosts Program.Main inside the
         // shared testhost process. Real-process stop tests exercise StopAllProcesses directly
@@ -2805,25 +2837,25 @@ public static class Program
         }
 
         var defenderResult = DefenderExclusionSetup.RunRemove(
-            projectRoot, DefenderExclusionSetup.Dependencies.CreateReal(), Console.WriteLine);
+            projectRoot, DefenderExclusionSetup.Dependencies.CreateReal(), WriteSetupLine);
         if (defenderResult == DefenderExclusionSetup.RemovalResult.Incomplete)
         {
             WriteError("uninstall stopped before changing project files because Defender cleanup did not complete; retry the command to finish.");
             return 1;
         }
 
-        var result = ProjectInstallation.Uninstall(projectRoot, Console.WriteLine);
-        Console.WriteLine(result.Changed
-            ? $"UnBramble removed from {projectRoot}."
-            : $"UnBramble was not set up in {projectRoot}; nothing to remove.");
-        if (!result.ExactRollback)
+        var result = ProjectInstallation.Uninstall(projectRoot, WriteSetupLine);
+        WriteSetupLine(result.Changed
+            ? $"Uninstall: complete for {projectRoot}."
+            : $"Uninstall: nothing was set up in {projectRoot}; nothing to remove.");
+        if (result.Changed && !result.ExactRollback)
         {
-            Console.WriteLine("UnBramble-owned entries were removed while later edits and unrelated project content were preserved.");
+            WriteSetupLine("Project setup: removed only UnBramble-owned entries; later edits and unrelated project content were preserved.");
         }
 
         var installDirectory = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
-        Console.WriteLine($"The UnBramble CLI remains installed at {installDirectory}.");
-        Console.WriteLine("After cleaning every project, run 'unbramble uninstall --machine' to remove it completely from this machine.");
+        WriteSetupLine($"CLI: remains installed at {installDirectory}.");
+        WriteSetupLine("Next: after cleaning every project, run 'unbramble uninstall --machine' to remove it completely from this machine.");
         return 0;
     }
 
@@ -2844,19 +2876,27 @@ public static class Program
 
         var userPath = Environment.GetEnvironmentVariable("Path", EnvironmentVariableTarget.User);
         var plan = MachineUninstaller.Inspect(executablePath, userPath);
-        Console.WriteLine("This will remove UnBramble from this machine:");
-        Console.WriteLine("  - stop every live UnBramble process across all projects");
-        Console.WriteLine($"  - installation directory: {plan.InstallDirectory}");
-        Console.WriteLine(plan.RemovedPathEntries > 0
-            ? $"  - remove {plan.RemovedPathEntries} matching entr{(plan.RemovedPathEntries == 1 ? "y" : "ies")} for that directory from your user Path"
-            : "  - user Path: no matching entry was found, so it will not be changed");
-        Console.WriteLine("  - permanently delete the entire installation directory after this process exits");
-        Console.WriteLine("Unity project integrations are not discovered or removed by this command; run 'unbramble uninstall' in each project first.");
+        WriteUninstallHeading("Uninstall machine");
+        WriteSetupLine($"Installation: {plan.InstallDirectory}");
+        WriteSetupLine("Processes: stop every live UnBramble process across all projects");
+        WriteSetupLine(plan.RemovedPathEntries > 0
+            ? $"User Path: remove {plan.RemovedPathEntries} matching entr{(plan.RemovedPathEntries == 1 ? "y" : "ies")} for this installation"
+            : "User Path: unchanged; no matching entry was found");
+        WriteSetupLine("Installation files: permanently delete the entire installation directory after this process exits");
+        var ansi = ConsoleCapabilities.SupportsAnsi;
+        WriteSpacer();
+        WriteParagraph(
+            AnsiStyle.InlineCommands(
+                AnsiStyle.Caution("Before continuing: ", ansi) +
+                "clean each Unity project separately with 'unbramble uninstall'. This command doesn't discover or remove project integrations.",
+                ansi));
+        WriteSpacer();
         var confirmation = ConfirmUninstall(reader.HasFlag("--yes") || reader.HasFlag("-y"));
         if (confirmation != ConfirmationResult.Accepted)
         {
             return confirmation == ConfirmationResult.Declined ? 0 : 1;
         }
+        WriteSpacer();
 
         var stopResult = StopAllProcesses(Directory.GetCurrentDirectory());
         if (stopResult != 0)
@@ -2865,11 +2905,19 @@ public static class Program
         }
 
         MachineUninstaller.Execute(plan, MachineUninstaller.Dependencies.CreateReal());
-        Console.WriteLine(plan.RemovedPathEntries > 0
-            ? "User Path updated."
-            : "User Path unchanged.");
-        Console.WriteLine($"UnBramble will delete '{plan.InstallDirectory}' after this process exits.");
+        WriteSetupLine(plan.RemovedPathEntries > 0
+            ? "User Path: updated."
+            : "User Path: unchanged; no matching entry was found.");
+        WriteSetupLine($"Uninstall: scheduled removal of {plan.InstallDirectory} after this process exits.");
         return 0;
+    }
+
+    private static void WriteUninstallHeading(string heading)
+    {
+        var ansi = ConsoleCapabilities.SupportsAnsi;
+        WriteParagraph(
+            AnsiStyle.Label(heading, ansi) +
+            AnsiStyle.Muted(" — review before continuing", ansi));
     }
 
     private static ConfirmationResult ConfirmUninstall(bool assumeYes) =>
@@ -2958,13 +3006,13 @@ public static class Program
                 var attribution = pidToProject.TryGetValue(pid, out var watchedProject)
                     ? $", was watching {watchedProject}"
                     : "";
-                Console.WriteLine($"Stopped {expectedFileName} (PID {pid}){attribution}");
+                WriteSetupLine($"Processes: stopped {expectedFileName} (PID {pid}){attribution}");
             }
         }
 
         if (stopped == 0)
         {
-            Console.WriteLine("No unbramble processes running.");
+            WriteSetupLine("Processes: none running.");
         }
 
         return 0;

@@ -22,17 +22,22 @@ public static class UninstallConfirmation
     {
         if (assumeYes)
         {
-            env.WriteLine("Confirmation accepted (-y/--yes).");
+            env.WriteLine(
+                AnsiStyle.Label("Confirmation: ", env.SupportsAnsi) +
+                AnsiStyle.Alive("accepted", env.SupportsAnsi) +
+                AnsiStyle.Muted(" (-y/--yes).", env.SupportsAnsi));
             return ConfirmationResult.Accepted;
         }
 
         if (!env.IsInteractive)
         {
-            env.WriteError("uninstall requires confirmation, but no interactive terminal is available; review the plan above and rerun with --yes.");
+            env.WriteError("uninstall requires confirmation, but no interactive terminal is available; review the plan above and rerun the same command with -y or --yes.");
             return ConfirmationResult.Unavailable;
         }
 
-        env.WriteLine("Continue? " + AnsiStyle.NoYesPrompt(env.SupportsAnsi));
+        env.WriteLine(
+            AnsiStyle.Label("Continue? ", env.SupportsAnsi) +
+            AnsiStyle.NoYesPrompt(env.SupportsAnsi));
         var answer = env.ReadLine()?.Trim();
         if (answer is not null
             && (answer.Equals("y", StringComparison.OrdinalIgnoreCase)
@@ -41,7 +46,9 @@ public static class UninstallConfirmation
             return ConfirmationResult.Accepted;
         }
 
-        env.WriteLine("Cancelled. Nothing changed.");
+        env.WriteLine(
+            AnsiStyle.Label("Confirmation: ", env.SupportsAnsi) +
+            AnsiStyle.Muted("cancelled; nothing changed.", env.SupportsAnsi));
         return ConfirmationResult.Declined;
     }
 }

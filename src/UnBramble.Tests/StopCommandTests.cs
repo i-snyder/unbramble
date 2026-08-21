@@ -26,7 +26,7 @@ public class StopCommandTests
         var (exitCode, stdOut, stdErr) = RunExe(cli.ExePath, "stop");
 
         Assert.True(exitCode == 0, $"expected exit 0, got {exitCode}\n-- stdout --\n{stdOut}\n-- stderr --\n{stdErr}");
-        Assert.Contains("No unbramble processes running.", stdOut);
+        Assert.Contains("Processes: none running.", stdOut);
     }
 
     [Fact]
