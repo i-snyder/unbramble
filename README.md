@@ -6,7 +6,9 @@
 
 *UnBramble gives coding agents a trustworthy dependency map for complex Unity projects so they can work without getting snagged in the thickets of a real project.*
 
-In a complex Unity project, small changes can have a big impact. No one keeps every connection in their head, and an agent starting fresh sees even less. UnBramble gives coding agents a current, queryable map of how the project fits together so they can accurately trace what a change will touch and discover connections that grep and ordinary code search miss.
+In a complex Unity project, small changes can have a big impact. No one keeps every connection in their head, and an agent starting fresh sees even less. UnBramble traces the relationships that grep and ordinary code search miss so agents can understand what a change will touch.
+
+UnBramble builds its graph locally using deterministic scanners and Roslyn static analysis. It makes no AI calls and doesn't rely on an agent to construct the graph. Developers can also query the same index directly through a simple CLI.
 
 ## Built from real Unity work
 
@@ -33,7 +35,7 @@ See [installing](docs/installing.md) for checksum verification, upgrades, and un
 
 ## Command map
 
-- `unbramble who-uses <target>` — find what references an asset, file, type, or member.
+- `unbramble who-uses <target>` — find what references an asset, file, GUID, type, or member.
 - `unbramble uses <target>` — find what an asset or file depends on.
 - `unbramble dead-candidates` — screen for conservatively identified removal candidates.
 - `unbramble --help` — see every command and option.
