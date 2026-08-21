@@ -4,9 +4,7 @@
   <img src="docs/assets/unbramble-emblem.png" alt="UnBramble mouse peeking over an UnBramble sign" width="560">
 </p>
 
-*UnBramble gives coding agents a trustworthy dependency map for complex Unity projects so they can work without getting snagged in the thickets of a real project.*
-
-UnBramble makes fully agentic development practical in large, interconnected Unity projects. It gives coding agents the project-wide dependency context they need to trace the impact of a change before editing, including Unity asset GUID relationships and Roslyn-resolved C# relationships that ordinary code search misses. The graph is built locally and deterministically, with no AI calls or agent-driven indexing, and developers can query the same data directly through a simple CLI.
+UnBramble makes fully agentic development practical in large Unity projects with dense asset and code relationships. It gives coding agents the project-wide dependency context they need to trace the impact of a change before editing, including Unity asset GUID relationships and Roslyn-resolved C# relationships that ordinary code search misses. The graph is built locally and deterministically, with no AI calls or agent-driven indexing, and developers can query the same data directly through a simple CLI.
 
 ## Quick Start
 
