@@ -4,6 +4,6 @@ Report vulnerabilities through GitHub private vulnerability reporting. If that i
 
 Never publish private Unity project content, filesystem layouts, credentials, exploit details, or security-sensitive logs.
 
-Security-sensitive areas include path traversal, unintended writes, command or PowerShell injection, unsafe link handling, stale-index answers, privilege boundaries, and Windows Defender exclusions. Defender changes require explicit consent, show every proposed exclusion, and can be removed with `unbramble defender remove`.
+Security-sensitive areas include path traversal, unintended writes, command or PowerShell injection, unsafe link handling, stale-index answers, privilege boundaries, and Windows Defender exclusions. Defender changes require explicit consent, show every proposed exclusion, and can be removed directly with `unbramble defender remove` or as part of `unbramble uninstall` for that project.
 
 Security fixes target the latest release and current `main`.

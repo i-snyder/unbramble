@@ -2855,7 +2855,6 @@ public static class Program
 
         var installDirectory = Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
         WriteSetupLine($"CLI: remains installed at {installDirectory}.");
-        WriteSetupLine("Next: after cleaning every project, run 'unbramble uninstall --machine' to remove it completely from this machine.");
         return 0;
     }
 
@@ -3261,8 +3260,8 @@ public static class Program
               unbramble defender status [path]
               unbramble defender setup [path]
               unbramble defender remove [path]
-              unbramble who-uses <path|guid|symbol> [--guids file] [--symbol] [--transitive] [--depth N] [--kind guid|path|cs|event] [--under prefix] [--json|--jsonl] [--verbose]
-              unbramble uses <path|guid> [--missing-only] [--summary] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]
+              unbramble who-uses <path|guid|symbol> [--guids file] [--symbol] [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--json|--jsonl] [--verbose]
+              unbramble uses <path|guid> [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--missing-only] [--paths file] [--summary|--group-by-target] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]
               unbramble audit-assets <paths-file> [--missing] [--group-by-target] [--include-owner-fields] [--build-reachable-only] [--top N] [--json|--jsonl] [--fail-if-found]
               unbramble cs-refs <name|doc-id> [-p path] [--json] [--verbose]   (alias of `who-uses <symbol>`)
               unbramble resolve <path|guid|name-fragment> [-p path] [--json] [--verbose]
@@ -3298,7 +3297,7 @@ public static class Program
             "uninstall" => "unbramble uninstall [path] [-y|--yes] | unbramble uninstall --machine [-y|--yes]",
             "defender" => "unbramble defender <status|setup|remove> [path]",
             "who-uses" => "unbramble who-uses <path|guid|symbol> [--guids file] [--symbol] [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--json|--jsonl] [--verbose]",
-            "uses" => "unbramble uses <path|guid> [--missing-only] [--paths file] [--summary|--group-by-target] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]",
+            "uses" => "unbramble uses <path|guid> [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--missing-only] [--paths file] [--summary|--group-by-target] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]",
             "audit-assets" => "unbramble audit-assets <paths-file> [--missing] [--group-by-target] [--include-owner-fields] [--build-reachable-only] [--top N] [--json|--jsonl] [--fail-if-found] [-p project]",
             "cs-refs" => "unbramble cs-refs <name|doc-id> [-p path] [--json] [--verbose]",
             "resolve" => "unbramble resolve <path|guid|name-fragment> [-p path] [--json] [--verbose]",

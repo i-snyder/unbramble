@@ -53,7 +53,7 @@ Use the repository wrapper for ordinary verification. It selects a complete x64 
 
 ## Public Release
 
-[`docs/releasing.md`](docs/releasing.md) is the sole release and repository-visibility checklist.
+[`docs/releasing.md`](docs/releasing.md) is the sole release checklist.
 
 Dependabot is intentionally not configured. Don't add `.github/dependabot.yml`, automated security fixes, or dependency-update PRs unless the maintainer explicitly asks for them. The Verify workflow is manual-only for now; run it from GitHub's Actions page or with `gh workflow run Verify`. It checks all direct and transitive NuGet dependencies for known vulnerabilities.
 

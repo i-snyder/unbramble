@@ -36,6 +36,19 @@ public class AgentWorkflowFeedbackTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Usage:", result.StdOut, StringComparison.Ordinal);
         Assert.Contains($"unbramble {verb}", result.StdOut, StringComparison.Ordinal);
+        if (verb == "who-uses")
+        {
+            Assert.Contains("--kind guid|path|cs|event|dll", result.StdOut, StringComparison.Ordinal);
+        }
+        else if (verb == "uses")
+        {
+            Assert.Contains("--transitive", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("--depth N", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("--kind guid|path|cs|event|dll", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("--under prefix", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("--paths file", result.StdOut, StringComparison.Ordinal);
+            Assert.Contains("--group-by-target", result.StdOut, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

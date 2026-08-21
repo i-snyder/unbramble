@@ -30,7 +30,8 @@ public class UninstallCommandTests
         Assert.Equal(originalClaude, File.ReadAllBytes(claudePath));
         Assert.False(Directory.Exists(UnBramblePaths.StateDirFor(fixture.Root)));
         Assert.Contains("Uninstall: complete", uninstall.StdOut);
-        Assert.Contains("unbramble uninstall --machine", uninstall.StdOut);
+        Assert.Contains("CLI: remains installed at", uninstall.StdOut);
+        Assert.DoesNotContain("unbramble uninstall --machine", uninstall.StdOut);
     }
 
     [Fact]

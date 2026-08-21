@@ -299,6 +299,9 @@ public class HomeCommandTests
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Usage:", stdOut, StringComparison.Ordinal);
+        Assert.Contains("--kind guid|path|cs|event|dll", stdOut, StringComparison.Ordinal);
+        Assert.Contains("unbramble uses <path|guid> [--transitive]", stdOut, StringComparison.Ordinal);
+        Assert.Contains("--paths file", stdOut, StringComparison.Ordinal);
     }
 
     // --- Pure function: FormatCompactCount ---------------------------------------------------
