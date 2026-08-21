@@ -8,6 +8,14 @@
 
 In a complex Unity project, small changes can have a big impact. No one keeps every connection in their head, and an agent starting fresh sees even less. UnBramble gives coding agents a current, queryable map of how the project fits together so they can accurately trace what a change will touch and discover connections that grep and ordinary code search miss.
 
+## Built from real Unity work
+
+I've worked professionally in games since 2008 and with Unity since 2011. I'm a Unity Certified Instructor, and I've worked with Unity teams ranging from AAA studios to indies.
+
+UnBramble grew out of that experience and my own agentic workflows. It has been tested on real Unity projects, the largest with ~114k files and ~750k dependency links. UnBramble indexes that project from scratch in ~90 seconds, then keeps it current in real time as files change.
+
+Its design, known gaps, and tests are open for inspection; see the [architecture](docs/architecture.md) and [technical comparison](docs/comparison.md) for nerd lore.
+
 ## Quick Start
 
 1. Download `unbramble-win-x64.zip` from the [latest release](https://github.com/i-snyder/unbramble/releases/latest).
@@ -29,14 +37,6 @@ See [installing](docs/installing.md) for checksum verification, upgrades, and un
 - `unbramble uses <target>` — find what an asset or file depends on.
 - `unbramble dead-candidates` — screen for conservatively identified removal candidates.
 - `unbramble --help` — see every command and option.
-
-## Why should I trust you?
-
-I've worked professionally in games since 2008 and with Unity since 2011. I'm a Unity Certified Instructor, and I've worked with Unity teams ranging from AAA studios to indies.
-
-UnBramble is the tool I developed for my own agentic Unity workflows: I wanted agents to understand a project's code and interconnected assets well enough to do strong work without constant hand-holding. The claims don't rest on my résumé alone — the architecture, known gaps, safety boundaries, and tests are all here in the repository. See the [technical comparison](docs/comparison.md) for nerd lore.
-
-Design, guarantees, and known gaps live in [`docs/architecture.md`](docs/architecture.md).
 
 Bug reports and focused contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a proposal or pull request, please :)
 
