@@ -4,10 +4,9 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>unbramble</AssemblyName>
     <RootNamespace>UnBramble.Cli</RootNamespace>
-    <Version>0.1.0</Version>
-    <!-- Keep the CLI's version flag output exactly "unbramble 0.1.0": without this, the
-         SDK appends "+<git commit hash>" to AssemblyInformationalVersion for any
-         project built inside a git repo. -->
+    <Version>0.2.0</Version>
+    <!-- Keep the CLI's version flag free of build metadata: without this, the SDK appends
+         "+<git commit hash>" to AssemblyInformationalVersion inside a git repo. -->
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>

@@ -24,4 +24,4 @@ jobs:
         run: ./scripts/verify-all.ps1 -SkipPublish
       - name: Check product dependencies
         shell: pwsh
-        run: dotnet list UnBramble.sln package --vulnerable --include-transitive
+        run: dotnet package list --project UnBramble.sln --vulnerable --include-transitive
