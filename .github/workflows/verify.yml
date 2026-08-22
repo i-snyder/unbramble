@@ -19,6 +19,9 @@ jobs:
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
+      - name: Install ripgrep
+        shell: pwsh
+        run: choco install ripgrep --yes --no-progress
       - name: Build and test
         shell: pwsh
         run: ./scripts/verify-all.ps1 -SkipPublish
