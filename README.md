@@ -21,7 +21,7 @@ UnBramble gives coding agents the project-wide context they need to trace the im
 
 UnBramble will guide you through setup and grow its index.
 
-UnBramble uses no agent hooks and injects nothing into an agent at runtime. Setup adds a small static instruction block to AGENTS.md so agents know the CLI is available and when to query it (CLAUDE.md gets a shim to point to AGENTS.md when needed to ensure cross-agent compatibility). For first-time setup, if you're working in a session when you install, just ask your agent to re-read AGENTS.md to start using it in that session.
+UnBramble is agent-agnostic: it works with essentially any agent that can read project files and run commands, including Claude Code, Claude Desktop, Codex, and ChatGPT-based coding environments. It uses no agent hooks and injects nothing into an agent at runtime. Setup adds a small static instruction block to AGENTS.md so agents know the CLI is available and when to query it (CLAUDE.md gets a shim to point to AGENTS.md when needed to ensure cross-agent compatibility). For first-time setup, if you're working in a session when you install, just ask your agent to re-read AGENTS.md to start using it in that session.
 
 After that, new agents in that project will pick it up automatically. Work with your agent normally: it can find its way through the project whenever it needs dependency context, without you manually mapping connections for every session.
 
