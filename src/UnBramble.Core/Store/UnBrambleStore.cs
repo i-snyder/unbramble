@@ -64,6 +64,17 @@ public sealed class UnBrambleStore : IDisposable
 
     private readonly SqliteConnection _connection;
 
+    // UnityEvent linking is a query-time derived view over refs/symbols. A symbol-shaped
+    // who-uses answer consumes the same complete view for the symbol itself, its declaring
+    // file, and (on a reachability-cache miss) the liveness edge seed. Recomputing the full
+    // cascade at each surface turned one logical query into two or three identical project-wide
+    // passes. Cache the immutable result against build_reachable_state.graph_generation: every
+    // transaction that can change refs, symbols, or files increments that generation, including
+    // writes from another process, so reuse can make an answer faster but never stale.
+    private EventLinkCache? _eventLinkCache;
+
+    private sealed record EventLinkCache(long GraphGeneration, IReadOnlyList<EventLinkResult> Links);
+
     public string DbPath { get; }
 
     public bool WasCreated { get; private set; }
@@ -2253,19 +2264,34 @@ public sealed class UnBrambleStore : IDisposable
     /// </summary>
     public IReadOnlyList<EventLinkResult> ResolveEventLinks()
     {
-        var calls = LoadEventCallEntries();
-        if (calls.Count == 0)
+        var startGeneration = GetBuildReachabilityGraphGeneration();
+        if (_eventLinkCache is { } cached && cached.GraphGeneration == startGeneration)
         {
-            return [];
+            return cached.Links;
         }
 
+        var calls = LoadEventCallEntries();
         var results = new List<EventLinkResult>(calls.Count);
+
+        // A real project can serialize the same (type, method) binding dozens of times. These
+        // caches live for exactly one resolution pass, so they cannot outlive the DB generation
+        // being resolved and need no invalidation protocol of their own.
+        var typeResolutions = new Dictionary<string, (string? TypeDocId, bool AssemblySemantic)>(StringComparer.Ordinal);
+        var declaredMembers = new Dictionary<(string TypeDocId, string MethodName), List<MemberCandidate>>();
+        var inheritTargets = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var call in calls)
         {
-            results.AddRange(ResolveOneEventCall(call));
+            results.AddRange(ResolveOneEventCall(call, typeResolutions, declaredMembers, inheritTargets));
         }
 
-        return results;
+        IReadOnlyList<EventLinkResult> resolved = results.AsReadOnly();
+        var endGeneration = GetBuildReachabilityGraphGeneration();
+        if (endGeneration == startGeneration)
+        {
+            _eventLinkCache = new EventLinkCache(endGeneration, resolved);
+        }
+
+        return resolved;
     }
 
     /// <summary>Matched event links whose target member's doc_id is exactly <paramref name="docId"/>
@@ -2548,16 +2574,33 @@ public sealed class UnBrambleStore : IDisposable
     }
 
     /// <summary>The per-call cascade (4 steps).</summary>
-    private List<EventLinkResult> ResolveOneEventCall(EventCallEntry call)
+    private List<EventLinkResult> ResolveOneEventCall(
+        EventCallEntry call,
+        Dictionary<string, (string? TypeDocId, bool AssemblySemantic)> typeResolutions,
+        Dictionary<(string TypeDocId, string MethodName), List<MemberCandidate>> declaredMembers,
+        Dictionary<string, List<string>> inheritTargets)
     {
-        var (typeDocId, typeSemantic) = ResolveEventTargetType(call.TargetTypeName);
+        var rawTypeKey = call.TargetTypeName ?? string.Empty;
+        if (!typeResolutions.TryGetValue(rawTypeKey, out var typeResolution))
+        {
+            typeResolution = ResolveEventTargetType(call.TargetTypeName);
+            typeResolutions.Add(rawTypeKey, typeResolution);
+        }
+
+        var (typeDocId, typeSemantic) = typeResolution;
         if (typeDocId is null)
         {
             // Step 1 absent-case: no type resolvable at all -- straight to step 4.
             return [BuildUnmatched(call)];
         }
 
-        var declared = FindDeclaredMembers(typeDocId, call.MethodName);
+        var memberKey = (typeDocId, call.MethodName);
+        if (!declaredMembers.TryGetValue(memberKey, out var declared))
+        {
+            declared = FindDeclaredMembers(typeDocId, call.MethodName);
+            declaredMembers.Add(memberKey, declared);
+        }
+
         if (declared.Count == 1)
         {
             var d = declared[0];
@@ -2576,7 +2619,7 @@ public sealed class UnBrambleStore : IDisposable
             return [.. declared.Select(d => BuildMatched(call, d, "overload", EdgeConfidence.Advisory))];
         }
 
-        var inherited = WalkInheritedMembers(typeDocId, call.MethodName);
+        var inherited = WalkInheritedMembers(typeDocId, call.MethodName, declaredMembers, inheritTargets);
         if (inherited.Count > 0)
         {
             // Step 3: any match found via the inherited walk is capped at advisory.
@@ -2688,12 +2731,21 @@ public sealed class UnBrambleStore : IDisposable
         var exact = $"M:{typeQualifiedName}.{methodName}";
         var overloadPrefixPattern = EscapeLike(exact + "(") + "%";
 
+        // Every accepted doc_id is either `exact` or begins with `exact + "("`. Under the
+        // column's binary collation that set lies in [exact, exact + ")"). Keeping the original
+        // equality/escaped-LIKE predicate preserves its semantics byte-for-byte, while the
+        // additional bounds let SQLite seek idx_symbols_docid instead of scanning that entire
+        // index once for every serialized event call (189k rows per lookup on the project that
+        // exposed this).
+        var upperExclusive = exact + ")";
+
         const string sql = """
             SELECT s.doc_id, s.file_id, f.path, a.mode
             FROM symbols s
             LEFT JOIN files f ON f.id = s.file_id
             JOIN assemblies a ON a.id = s.assembly_id
-            WHERE s.kind = 'method' AND s.name = @methodName
+            WHERE s.doc_id >= @exact AND s.doc_id < @upperExclusive
+              AND s.kind = 'method' AND s.name = @methodName
               AND (s.doc_id = @exact OR s.doc_id LIKE @overloadPattern ESCAPE '\')
             ORDER BY s.doc_id;
             """;
@@ -2701,6 +2753,7 @@ public sealed class UnBrambleStore : IDisposable
         command.CommandText = sql;
         command.Parameters.AddWithValue("@methodName", methodName);
         command.Parameters.AddWithValue("@exact", exact);
+        command.Parameters.AddWithValue("@upperExclusive", upperExclusive);
         command.Parameters.AddWithValue("@overloadPattern", overloadPrefixPattern);
         using var reader = command.ExecuteReader();
         var result = new List<MemberCandidate>();
@@ -2728,7 +2781,11 @@ public sealed class UnBrambleStore : IDisposable
     /// candidates considered, never fewer); not exercised by the committed fixture (single-class
     /// chain only), documented here as a known simplification.
     /// </summary>
-    private List<MemberCandidate> WalkInheritedMembers(string typeDocId, string methodName)
+    private List<MemberCandidate> WalkInheritedMembers(
+        string typeDocId,
+        string methodName,
+        Dictionary<(string TypeDocId, string MethodName), List<MemberCandidate>> declaredMembers,
+        Dictionary<string, List<string>> inheritTargets)
     {
         var visited = new HashSet<string>(StringComparer.Ordinal) { typeDocId };
         var frontier = new List<string> { typeDocId };
@@ -2740,14 +2797,27 @@ public sealed class UnBrambleStore : IDisposable
 
             foreach (var current in frontier)
             {
-                foreach (var baseDocId in QueryInheritTargets(current))
+                if (!inheritTargets.TryGetValue(current, out var bases))
+                {
+                    bases = QueryInheritTargets(current);
+                    inheritTargets.Add(current, bases);
+                }
+
+                foreach (var baseDocId in bases)
                 {
                     if (!visited.Add(baseDocId))
                     {
                         continue;
                     }
 
-                    levelMatches.AddRange(FindDeclaredMembers(baseDocId, methodName));
+                    var memberKey = (baseDocId, methodName);
+                    if (!declaredMembers.TryGetValue(memberKey, out var inheritedMembers))
+                    {
+                        inheritedMembers = FindDeclaredMembers(baseDocId, methodName);
+                        declaredMembers.Add(memberKey, inheritedMembers);
+                    }
+
+                    levelMatches.AddRange(inheritedMembers);
                     nextFrontier.Add(baseDocId);
                 }
             }

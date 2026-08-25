@@ -156,6 +156,93 @@ public class UnityEventLinkingTests
         Assert.DoesNotContain(whoUsesPlayer.Results, r => r.Kind == "event" && r.MethodName == "Vanished");
     }
 
+    [Fact]
+    public void OverloadedDeclaredMethod_PreservesEveryAdvisoryCandidate()
+    {
+        using var fixture = FixtureCopy.Create();
+        WriteScriptWithMeta(
+            fixture.Root,
+            "Assets/Scripts/OverloadTarget.cs",
+            "public class OverloadTarget { public void Pick(int value) { } public void Pick(string value) { } }",
+            "11111111111111111111111111111111");
+        ReplaceVanishedBinding(fixture.Root, "OverloadTarget, Game", "Pick");
+        WriteSemanticModeCsprojs(fixture.Root);
+
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        using var store = UnBrambleStore.OpenOrCreate(engine.DbPath, engine.UnityVersion);
+        var links = store.ResolveEventLinks().Where(link => link.RawMethodName == "Pick").ToList();
+
+        Assert.Equal(2, links.Count);
+        Assert.All(links, link =>
+        {
+            Assert.True(link.IsMatched);
+            Assert.Equal("overload", link.MatchKind);
+            Assert.Equal("advisory", link.Confidence);
+        });
+        Assert.Equal(
+            new[] { "M:OverloadTarget.Pick(System.Int32)", "M:OverloadTarget.Pick(System.String)" },
+            links.Select(link => link.TargetDocId!).OrderBy(docId => docId).ToArray());
+    }
+
+    [Fact]
+    public void TypeNameAmbiguousAcrossAssemblies_RemainsUnmatched()
+    {
+        using var fixture = FixtureCopy.Create();
+        WriteScriptWithMeta(
+            fixture.Root,
+            "Assets/Scripts/AmbiguousEventTarget.cs",
+            "public class AmbiguousEventTarget { public void Fire() { } }",
+            "22222222222222222222222222222222");
+        WriteScriptWithMeta(
+            fixture.Root,
+            "Assets/Scripts/Core/AmbiguousEventTarget.cs",
+            "public class AmbiguousEventTarget { public void Fire() { } }",
+            "33333333333333333333333333333333");
+        ReplaceVanishedBinding(fixture.Root, "AmbiguousEventTarget, MissingAssembly", "Fire");
+        WriteSemanticModeCsprojs(fixture.Root);
+
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        using var store = UnBrambleStore.OpenOrCreate(engine.DbPath, engine.UnityVersion);
+        var link = Assert.Single(store.ResolveEventLinks(), candidate => candidate.RawMethodName == "Fire");
+
+        Assert.False(link.IsMatched);
+        Assert.Null(link.TargetDocId);
+        Assert.Equal("unmatched", link.MatchKind);
+        Assert.Equal("advisory", link.Confidence);
+    }
+
+    [Fact]
+    public void ResolveEventLinks_ReusesGenerationSnapshot_AndInvalidatesAcrossWriter()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        using var reader = UnBrambleStore.OpenOrCreate(engine.DbPath, engine.UnityVersion);
+        var first = reader.ResolveEventLinks();
+        var sameGeneration = reader.ResolveEventLinks();
+
+        Assert.NotEmpty(first);
+        Assert.Same(first, sameGeneration);
+
+        // Simulates a watcher/one-shot writer in another process. ResetData increments the same
+        // persisted graph generation every ordinary ref/symbol mutation does, so the reader's
+        // next lookup must reject its cached snapshot even though its own connection performed
+        // no write.
+        using (var writer = UnBrambleStore.OpenOrCreate(engine.DbPath, engine.UnityVersion))
+        {
+            writer.ResetData();
+        }
+
+        var afterExternalMutation = reader.ResolveEventLinks();
+        Assert.NotSame(first, afterExternalMutation);
+        Assert.Empty(afterExternalMutation);
+    }
+
     // ---- weakest-link answer confidence crosses an advisory event hop --------------------------
 
     [Fact]
@@ -271,6 +358,25 @@ public class UnityEventLinkingTests
                 new XElement(ns + "HintPath", p))));
         var project = new XElement(ns + "Project", new XAttribute("ToolsVersion", "Current"), itemGroup);
         new XDocument(project).Save(Path.Combine(fixtureRoot, assemblyName + ".csproj"));
+    }
+
+    private static void WriteScriptWithMeta(string fixtureRoot, string relativePath, string contents, string guid)
+    {
+        var fullPath = Path.Combine(fixtureRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        File.WriteAllText(fullPath, contents);
+        File.WriteAllText(fullPath + ".meta", $"fileFormatVersion: 2{Environment.NewLine}guid: {guid}{Environment.NewLine}");
+    }
+
+    private static void ReplaceVanishedBinding(string fixtureRoot, string targetTypeName, string methodName)
+    {
+        var scenePath = Path.Combine(fixtureRoot, "Assets", "Scenes", "Level.unity");
+        var text = File.ReadAllText(scenePath);
+        var newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var original = $"m_TargetAssemblyTypeName: Foo, Game{newline}        m_MethodName: Vanished";
+        var replacement = $"m_TargetAssemblyTypeName: {targetTypeName}{newline}        m_MethodName: {methodName}";
+        Assert.Contains(original, text, StringComparison.Ordinal);
+        File.WriteAllText(scenePath, text.Replace(original, replacement, StringComparison.Ordinal));
     }
 
     private static EventLedger LoadEventLedger()
