@@ -45,6 +45,17 @@ Path-based UI Toolkit references have no GUID text for ripgrep to verify, so com
 
 The pass condition is zero containment violations: every dependency Unity reports must appear in `unbramble uses`. UnBramble may also report unresolved, external, or built-in references Unity omits.
 
+### 4. Exercise query responsiveness
+
+Choose representative targets from the project: a high-fan-out asset, a semantic type, a semantic member, and a short symbol name known to be ambiguous. Time and save each query's output so responsiveness is checked without trading away result accuracy.
+
+1. Run one query without a fresh watcher heartbeat. This exercises the first freshness sweep plus the query.
+2. Run the asset query both with and without `--under`, including a case with a large result set.
+3. Run the semantic queries sequentially, then repeat them and compare the saved outputs byte-for-byte.
+4. Run two or three semantic queries concurrently as a diagnostic, then compare each result with its sequential output.
+
+Every query must complete without an unhealthy-state warning, timeout, or missing rows. Concurrent semantic queries may be slower because separate CLI processes don't share query-time derived results; record the slowdown, but treat changed output, an unbounded wait, or a failed process as a bug. Keep target names, paths, and raw output private when reporting measurements.
+
 ## Validate `dead-candidates`
 
 Before running liveness analysis, the project must pass the graph checks above, every C# assembly must be semantic, and any installed Addressables version must fall within `AddressablesDetector.ConfirmedRanges`. Don't bypass a failed gate.
@@ -75,6 +86,8 @@ A smoke-test failure after deleting a proven candidate is a correctness bug unti
 
 - [ ] `rg-parity.ps1` reports zero mismatches.
 - [ ] `compare-unity-deps.ps1` reports zero containment violations, including UI Toolkit and Shader Graph assets.
+- [ ] Representative asset, semantic, ambiguous-symbol, and first-sweep queries complete predictably, and repeated outputs are identical.
+- [ ] Concurrent semantic-query diagnostics complete with the same results; any slowdown is recorded.
 - [ ] `dead-candidates` passes every availability gate.
 - [ ] At least one small delete-and-smoke-test cycle succeeds.
 
