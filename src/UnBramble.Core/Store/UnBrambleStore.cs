@@ -57,12 +57,15 @@ public sealed class UnBrambleStore : IDisposable
     // v10: adds a graph generation to the reachability-cache state. A concurrent writer can now
     // invalidate a computation before it is published instead of allowing stale derived state
     // to become valid again after the writer commits.
-    public const int CurrentSchemaVersion = 10;
+    // v11: adds a durable store instance identity. Heartbeats name the exact database instance
+    // they maintain, so a fresh heartbeat can never vouch for a replaced or redirected cache.
+    public const int CurrentSchemaVersion = 11;
 
     private const string BuiltinGuidE = "0000000000000000e000000000000000";
     private const string BuiltinGuidF = "0000000000000000f000000000000000";
 
     private readonly SqliteConnection _connection;
+    private string? _storeInstanceId;
 
     // UnityEvent linking is a query-time derived view over refs/symbols. A symbol-shaped
     // who-uses answer consumes the same complete view for the symbol itself, its declaring
@@ -80,6 +83,11 @@ public sealed class UnBrambleStore : IDisposable
     public bool WasCreated { get; private set; }
 
     public bool SchemaWasReset { get; private set; }
+
+    /// <summary>Durable identity of this exact database instance, regenerated on every schema
+    /// rebuild. Watcher heartbeats must carry the same value before a query may trust them.</summary>
+    public string StoreInstanceId => _storeInstanceId
+        ?? throw new InvalidOperationException("the index is missing its store instance identity");
 
     private UnBrambleStore(SqliteConnection connection, string dbPath)
     {
@@ -117,8 +125,9 @@ public sealed class UnBrambleStore : IDisposable
         // defeating WAL and making even `stats` fail while another process indexed. A matching
         // schema stamp is the contract that all current objects already exist.
         if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase)
-            && string.Equals(store.TryQuerySchemaVersion(), currentVersionText, StringComparison.Ordinal))
+            && store.TryLoadCurrentStoreIdentity(currentVersionText, out var steadyStateStoreId))
         {
+            store._storeInstanceId = steadyStateStoreId;
             ExecuteNonQuery(connection, "PRAGMA synchronous=NORMAL;");
             return store;
         }
@@ -137,9 +146,13 @@ public sealed class UnBrambleStore : IDisposable
         // already exist as the recovery path on any corruption, so FULL's extra durability buys
         // nothing here.
         ExecuteNonQuery(connection, "PRAGMA synchronous=NORMAL;");
-        if (!string.Equals(store.TryQuerySchemaVersion(), currentVersionText, StringComparison.Ordinal))
+        if (!store.TryLoadCurrentStoreIdentity(currentVersionText, out var currentStoreId))
         {
             store.EnsureSchema(unityVersion);
+        }
+        else
+        {
+            store._storeInstanceId = currentStoreId;
         }
         return store;
     }
@@ -167,6 +180,27 @@ public sealed class UnBrambleStore : IDisposable
         return QueryMetaValue("schema_version");
     }
 
+    private bool TryLoadCurrentStoreIdentity(string currentVersionText, out string storeInstanceId)
+    {
+        storeInstanceId = string.Empty;
+        if (!string.Equals(TryQuerySchemaVersion(), currentVersionText, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var candidate = QueryMetaValue("store_instance_id");
+        var indexComplete = QueryMetaValue("index_complete");
+        if (candidate is null
+            || !Guid.TryParseExact(candidate, "N", out _)
+            || indexComplete is not ("0" or "1"))
+        {
+            return false;
+        }
+
+        storeInstanceId = candidate;
+        return true;
+    }
+
     private static string? QueryScalar(SqliteConnection connection, string sql)
     {
         using var command = connection.CreateCommand();
@@ -189,7 +223,13 @@ public sealed class UnBrambleStore : IDisposable
         var existingVersion = QueryMetaValue("schema_version");
         var currentVersionText = CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture);
 
-        if (existingVersion is not null && existingVersion != currentVersionText)
+        var existingStoreId = string.Empty;
+        var existingMetadataIsValid = existingVersion == currentVersionText
+            && TryLoadCurrentStoreIdentity(currentVersionText, out existingStoreId);
+        var rebuildSchema = existingVersion is not null
+            && (existingVersion != currentVersionText || !existingMetadataIsValid);
+
+        if (rebuildSchema)
         {
             // A version bump can mean more than new tables (v4 adds columns to the
             // pre-existing refs/symbols tables) — CREATE TABLE IF NOT EXISTS below is a no-op
@@ -433,23 +473,24 @@ public sealed class UnBrambleStore : IDisposable
             SELECT DISTINCT source_file_id, target_file_id FROM cs_file_refs;
             """);
 
-        if (existingVersion is null)
+        if (existingVersion is null || rebuildSchema)
         {
-            WasCreated = true;
-            SetMetaValue("schema_version", currentVersionText);
+            WasCreated = existingVersion is null;
             SetMetaValue("unity_version", unityVersion);
             SetMetaValue("created_utc", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
-        }
-        else if (existingVersion != currentVersionText)
-        {
+            var storeInstanceId = Guid.NewGuid().ToString("N");
+            SetMetaValue("index_complete", "0");
+            SetMetaValue("store_instance_id", storeInstanceId);
+            // Publish the schema stamp last. A crash before this write leaves either no stamp or
+            // the previous version/invalid-v11 metadata, so the next open repeats the rebuild.
             SetMetaValue("schema_version", currentVersionText);
-            SetMetaValue("unity_version", unityVersion);
-            SetMetaValue("created_utc", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+            _storeInstanceId = storeInstanceId;
         }
         else
         {
             // Keep unity_version fresh; the project may have been upgraded since last index.
             SetMetaValue("unity_version", unityVersion);
+            _storeInstanceId = existingStoreId;
         }
     }
 

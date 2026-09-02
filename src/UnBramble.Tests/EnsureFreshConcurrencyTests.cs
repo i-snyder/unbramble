@@ -88,7 +88,7 @@ public class EnsureFreshConcurrencyTests
         _ = Task.Run(() =>
         {
             Thread.Sleep(TimeSpan.FromMilliseconds(600));
-            HeartbeatFile.Write(fixture.Root, pid: 999999, DateTime.UtcNow);
+            heldLock!.PublishFreshness(() => HeartbeatFile.Write(fixture.Root, pid: 999999, DateTime.UtcNow, engine.StoreInstanceId, heldLock.SessionId));
         });
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -230,12 +230,172 @@ public class EnsureFreshConcurrencyTests
 
         using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
         Assert.NotNull(watcherLock);
-        WriteRawHeartbeatWithoutProtocol(fixture.Root);
+        watcherLock.PublishFreshness(() => WriteRawHeartbeatWithoutProtocol(fixture.Root));
 
         var exception = Assert.Throws<InvalidOperationException>(() => engine.EnsureFresh());
 
-        Assert.Contains("older unbramble version", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("does not match", exception.Message, StringComparison.Ordinal);
         Assert.Contains("unbramble stop", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnsureFresh_FreshHeartbeatForDifferentDatabaseInstance_IsRejected()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcherLock);
+        watcherLock.PublishFreshness(() => HeartbeatFile.Write(
+            fixture.Root,
+            Environment.ProcessId,
+            DateTime.UtcNow,
+            Guid.NewGuid().ToString("N"),
+            watcherLock.SessionId));
+
+        var exception = Assert.Throws<InvalidOperationException>(() => engine.EnsureFresh());
+        Assert.Contains("does not match this database", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnsureFresh_CurrentHeartbeatInheritedByOlderLockOwner_IsRejected()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        var currentOwner = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(currentOwner);
+        currentOwner.PublishFreshness(() => HeartbeatFile.Write(
+            fixture.Root,
+            Environment.ProcessId,
+            DateTime.UtcNow,
+            engine.StoreInstanceId,
+            currentOwner.SessionId));
+        currentOwner.Dispose();
+
+        using var olderOwner = new FileStream(
+            WatcherLock.PathFor(fixture.Root),
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => engine.EnsureFresh());
+        Assert.Contains("legacy watcher", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EnsureFresh_IncompleteIndexWithLegacyWatcher_DoesNotMutateBeforeRejectingOwner()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        SetIndexComplete(engine.DbPath, complete: false);
+
+        using var olderOwner = new FileStream(
+            WatcherLock.PathFor(fixture.Root),
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            engine.EnsureFresh(waitForConcurrentSweep: false));
+
+        Assert.Contains("legacy watcher", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("0", ReadIndexComplete(engine.DbPath));
+    }
+
+    [Fact]
+    public void EnsureFresh_ReplacedDatabaseStartsIncompleteAndCannotTrustOldHeartbeat()
+    {
+        using var fixture = FixtureCopy.Create();
+        string dbPath;
+        string oldStoreInstanceId;
+        using (var engine = UnBrambleEngine.Open(fixture.Root))
+        {
+            engine.RunIndex(full: false);
+            dbPath = engine.DbPath;
+            oldStoreInstanceId = engine.StoreInstanceId;
+        }
+
+        using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcherLock);
+        watcherLock.PublishFreshness(() => HeartbeatFile.Write(
+            fixture.Root,
+            Environment.ProcessId,
+            DateTime.UtcNow,
+            oldStoreInstanceId,
+            watcherLock.SessionId));
+
+        SqliteConnection.ClearAllPools();
+        File.Delete(dbPath);
+        File.Delete(dbPath + "-wal");
+        File.Delete(dbPath + "-shm");
+
+        using var replacement = UnBrambleEngine.Open(fixture.Root);
+        Assert.NotEqual(oldStoreInstanceId, replacement.StoreInstanceId);
+
+        var outcome = replacement.EnsureFresh();
+        Assert.True(outcome.SweepPerformed);
+        Assert.NotEmpty(replacement.GetAllFiles());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EnsureFresh_RetainsLegacyWatcherGuardThroughQueryLifetime(bool useHeartbeatFastPath)
+    {
+        using var fixture = FixtureCopy.Create();
+        var engine = UnBrambleEngine.Open(fixture.Root);
+        WatcherLock.WatcherLease? currentWatcher = null;
+        try
+        {
+            engine.RunIndex(full: false);
+            if (useHeartbeatFastPath)
+            {
+                currentWatcher = WatcherLock.TryAcquire(fixture.Root);
+                Assert.NotNull(currentWatcher);
+                currentWatcher.PublishFreshness(() => HeartbeatFile.Write(
+                    fixture.Root,
+                    Environment.ProcessId,
+                    DateTime.UtcNow,
+                    engine.StoreInstanceId,
+                    currentWatcher.SessionId));
+            }
+
+            var outcome = engine.EnsureFresh();
+            Assert.Equal(!useHeartbeatFastPath, outcome.SweepPerformed);
+            currentWatcher?.Dispose();
+            currentWatcher = null;
+
+            Assert.Throws<IOException>(() =>
+            {
+                using var legacyWatcher = new FileStream(
+                    WatcherLock.PathFor(fixture.Root),
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None);
+            });
+
+            var target = engine.ResolveQueryTarget("Assets/Data/B.asset").Target;
+            Assert.NotNull(target);
+            Assert.Contains(
+                engine.WhoUses(target, transitive: false, depthCap: 1).Results,
+                result => result.SourcePath == "Assets/Data/A.asset");
+
+            engine.Dispose();
+            using var succeedsAfterQuery = new FileStream(
+                WatcherLock.PathFor(fixture.Root),
+                FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None);
+        }
+        finally
+        {
+            currentWatcher?.Dispose();
+            engine.Dispose();
+        }
     }
 
     [Fact]
@@ -247,7 +407,9 @@ public class EnsureFreshConcurrencyTests
         try
         {
             engine.RunIndex(full: false);
-            HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow);
+            using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
+            Assert.NotNull(watcherLock);
+            watcherLock.PublishFreshness(() => HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow, engine.StoreInstanceId, watcherLock.SessionId));
 
             var outcome = engine.EnsureFresh();
             Assert.False(outcome.SweepPerformed);
@@ -298,7 +460,9 @@ public class EnsureFreshConcurrencyTests
         try
         {
             firstEngine.RunIndex(full: false);
-            HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow);
+            using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
+            Assert.NotNull(watcherLock);
+            watcherLock.PublishFreshness(() => HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow, firstEngine.StoreInstanceId, watcherLock.SessionId));
             firstEngine.EnsureFresh();
 
             writerTask = Task.Run(() =>

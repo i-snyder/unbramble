@@ -90,9 +90,7 @@ public sealed class ReferenceParser
     /// source_fileid are NULL, per the DDL comment).
     /// </summary>
     public IReadOnlyList<GuidRefRow> ParseMetaOwnerRefs(string metaFullPath, string? ownGuid) =>
-        File.Exists(metaFullPath)
-            ? ScanGuidOnlyLines(metaFullPath, ownGuid, OversizedLinePolicy.CompactHexYamlScalar)
-            : [];
+        ScanGuidOnlyLines(metaFullPath, ownGuid, OversizedLinePolicy.CompactHexYamlScalar);
 
     private static List<GuidRefRow> ScanGuidOnlyLines(
         string fullPath,

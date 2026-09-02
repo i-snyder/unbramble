@@ -18,6 +18,42 @@ namespace UnBramble.Tests;
 /// </summary>
 public class SchemaMigrationTests
 {
+    [Theory]
+    [InlineData("store_instance_id")]
+    [InlineData("index_complete")]
+    public void CurrentSchema_WithInterruptedRequiredMetadata_RebuildsInsteadOfUsingFastPath(string missingKey)
+    {
+        using var fixture = FixtureCopy.Create();
+        var dbPath = UnBramblePaths.RelativeTo(fixture.Root, UnBramblePaths.DbRelativePath);
+        string oldStoreInstanceId;
+
+        using (var store = UnBrambleStore.OpenOrCreate(dbPath, "2022.3.30f1"))
+        {
+            oldStoreInstanceId = store.StoreInstanceId;
+        }
+
+        using (var conn = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            conn.Open();
+            Exec(conn, "INSERT INTO roots(real_path, project_prefix) VALUES ('C:/fixture/Assets', 'Assets');");
+            Exec(conn, "INSERT INTO files(path, kind, mtime, size) VALUES ('Assets/Interrupted.asset', 'asset', 1, 1);");
+            Exec(conn, "UPDATE meta_kv SET value = '1' WHERE key = 'index_complete';");
+            Exec(conn, $"DELETE FROM meta_kv WHERE key = '{missingKey}';");
+        }
+
+        using var recovered = UnBrambleStore.OpenOrCreate(dbPath, "2022.3.30f1");
+        Assert.True(recovered.SchemaWasReset);
+        Assert.False(recovered.WasCreated);
+        Assert.NotEqual(oldStoreInstanceId, recovered.StoreInstanceId);
+        Assert.False(recovered.IsIndexComplete());
+
+        using var verify = new SqliteConnection($"Data Source={dbPath}");
+        verify.Open();
+        using var count = verify.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM files;";
+        Assert.Equal(0L, (long)count.ExecuteScalar()!);
+    }
+
     [Fact]
     public void VersionMismatch_AgainstOldShapedRefsTable_RebuildsSchemaCleanlyAndAcceptsNewColumns()
     {

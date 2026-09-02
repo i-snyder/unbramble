@@ -241,6 +241,35 @@ public class LargeSerializedAssetTests
         Assert.Equal(FollowingGuid, Assert.Single(parsed.GuidRefs).TargetGuid);
     }
 
+    [Theory]
+    [InlineData("utf8")]
+    [InlineData("utf16le")]
+    [InlineData("utf16be")]
+    [InlineData("utf32le")]
+    [InlineData("utf32be")]
+    public void BomEncodedYaml_WithMalformedTrailingBytes_IsRejectedStrictly(string encodingName)
+    {
+        using var temp = TempDir.Create();
+        var path = Path.Combine(temp.Root, $"Malformed-{encodingName}.asset");
+        Encoding encoding = encodingName switch
+        {
+            "utf8" => new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true),
+            "utf16le" => new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true),
+            "utf16be" => new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true),
+            "utf32le" => new UTF32Encoding(bigEndian: false, byteOrderMark: true, throwOnInvalidCharacters: true),
+            "utf32be" => new UTF32Encoding(bigEndian: true, byteOrderMark: true, throwOnInvalidCharacters: true),
+            _ => throw new ArgumentOutOfRangeException(nameof(encodingName)),
+        };
+        var text = $"%YAML 1.1\n--- !u!114 &1\nMonoBehaviour:\n  m_Ref: {{fileID: 1, guid: {FollowingGuid}, type: 3}}\n";
+        var preamble = encoding.GetPreamble();
+        var body = encoding.GetBytes(text);
+        var malformedTail = encodingName == "utf8" ? new byte[] { 0xc3 } : new byte[] { 0x00 };
+        File.WriteAllBytes(path, [.. preamble, .. body, .. malformedTail]);
+
+        Assert.Throws<DecoderFallbackException>(
+            () => new ReferenceParser().ParseContentSource(path, $"Assets/Malformed-{encodingName}.asset", ownGuid: null));
+    }
+
     [Fact]
     public void OversizedHexMetaBeforeIdentity_IsStreamedByScannerAndMetaParser()
     {
@@ -304,10 +333,15 @@ public class LargeSerializedAssetTests
         // finite writer lock instead of waiting forever for the watcher lifetime lock.
         using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
         Assert.NotNull(watcherLock);
-        HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow);
 
         using (var recovered = UnBrambleEngine.Open(fixture.Root))
         {
+            watcherLock.PublishFreshness(() => HeartbeatFile.Write(
+                fixture.Root,
+                Environment.ProcessId,
+                DateTime.UtcNow,
+                recovered.StoreInstanceId,
+                watcherLock.SessionId));
             var outcome = recovered.EnsureFresh();
             Assert.True(outcome.SweepPerformed);
 

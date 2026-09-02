@@ -1,5 +1,6 @@
 using System.Reflection;
 using UnBramble.Cli;
+using UnBramble.Core;
 using UnBramble.Core.Config;
 using UnBramble.Core.Freshness;
 using UnBramble.Tests.TestSupport;
@@ -252,13 +253,21 @@ public class HomeCommandTests
     {
         using var fixture = FixtureCopy.Create();
         _ = CliRunner.Run("init", "-p", fixture.Root);
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        using var watcher = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcher);
 
         var (exitCode, stdOut, _) = RunHome(
             ["-p", fixture.Root],
             isInteractive: true,
             supportsAnsi: false,
             Answers(),
-            beforeRun: () => HeartbeatFile.Write(fixture.Root, pid: 4242, DateTime.UtcNow));
+            beforeRun: () => watcher.PublishFreshness(() => HeartbeatFile.Write(
+                fixture.Root,
+                pid: 4242,
+                DateTime.UtcNow,
+                engine.StoreInstanceId,
+                watcher.SessionId)));
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Index is fresh", stdOut, StringComparison.Ordinal);

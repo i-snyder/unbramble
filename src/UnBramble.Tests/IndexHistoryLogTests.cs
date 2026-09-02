@@ -150,7 +150,7 @@ public class IndexHistoryLogTests
     public void Append_LivesAlongsideWatchStatusFile_NeverOverwritesIt()
     {
         using var fixture = FixtureCopy.Create();
-        UnBramble.Core.Freshness.HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow);
+        UnBramble.Core.Freshness.HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow, "store", "session");
 
         IndexHistoryLog.Append(fixture.Root, SampleEntry());
 

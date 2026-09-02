@@ -7,7 +7,7 @@ namespace UnBramble.Core.Freshness;
 
 /// <summary>
 /// The watcher's `.unbramble/watcher.heartbeat` file: JSON
-/// `{"pid": N, "utc": "...", "schema": V, "protocol": P}`,
+/// `{"pid": N, "utc": "...", "schema": V, "protocol": P, "storeInstanceId": "...", "watcherSessionId": "..."}`,
 /// written atomically (temp file + rename) so a reader never observes a half-written file.
 /// Hand-formatted/parsed via <see cref="JsonDocument"/> rather than a reflection-based
 /// serializer — trivial fixed shape, and JsonDocument (unlike JsonSerializer without a
@@ -27,8 +27,9 @@ public static class HeartbeatFile
     /// <summary>
     /// Version of the cross-process freshness contract independently of the SQLite shape. Bump
     /// whenever a writer must follow new rules for a heartbeat to vouch for its committed state.
+    /// Protocol 3 adds the watcher lock's fail-closed freshness-suppression byte.
     /// </summary>
-    public const int CurrentProtocolVersion = 1;
+    public const int CurrentProtocolVersion = 3;
 
     public const string RelativePath = UnBramblePaths.HeartbeatRelativePath;
 
@@ -84,13 +85,21 @@ public static class HeartbeatFile
     /// as corruption or a crash). The orphaned temp file is best-effort cleaned up too so a run of
     /// transient failures doesn't leak files under `.unbramble/` forever.
     /// </summary>
-    public static void Write(string projectRoot, int pid, DateTime utcNow)
+    public static void Write(
+        string projectRoot,
+        int pid,
+        DateTime utcNow,
+        string storeInstanceId,
+        string watcherSessionId)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeInstanceId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(watcherSessionId);
+
         var path = PathFor(projectRoot);
         var directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
 
-        var json = $$"""{"pid":{{pid.ToString(CultureInfo.InvariantCulture)}},"utc":"{{utcNow.ToString("O", CultureInfo.InvariantCulture)}}","schema":{{UnBrambleStore.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture)}},"protocol":{{CurrentProtocolVersion.ToString(CultureInfo.InvariantCulture)}}}""";
+        var json = $$"""{"pid":{{pid.ToString(CultureInfo.InvariantCulture)}},"utc":"{{utcNow.ToString("O", CultureInfo.InvariantCulture)}}","schema":{{UnBrambleStore.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture)}},"protocol":{{CurrentProtocolVersion.ToString(CultureInfo.InvariantCulture)}},"storeInstanceId":"{{storeInstanceId}}","watcherSessionId":"{{watcherSessionId}}"}""";
         var tempPath = Path.Combine(directory, $"watcher.heartbeat.tmp-{Guid.NewGuid():N}");
         try
         {
@@ -112,9 +121,15 @@ public static class HeartbeatFile
         }
     }
 
-    /// <summary><see cref="Schema"/> or <see cref="Protocol"/> is 0 when its stamp is absent,
-    /// deliberately never equal to any current nonzero contract version.</summary>
-    public readonly record struct Heartbeat(int Pid, DateTime UtcTimestamp, int Schema = 0, int Protocol = 0);
+    /// <summary><see cref="Schema"/> or <see cref="Protocol"/> is 0 when its stamp is absent;
+    /// identity fields are empty. Either shape deliberately fails the current trust contract.</summary>
+    public readonly record struct Heartbeat(
+        int Pid,
+        DateTime UtcTimestamp,
+        int Schema = 0,
+        int Protocol = 0,
+        string StoreInstanceId = "",
+        string WatcherSessionId = "");
 
     /// <summary>Null for any absent/unreadable/corrupt heartbeat — callers treat null exactly like a stale one (fall back to sweeping).</summary>
     public static Heartbeat? TryRead(string projectRoot)
@@ -134,11 +149,17 @@ public static class HeartbeatFile
 
             var schema = root.TryGetProperty("schema", out var schemaElement) ? schemaElement.GetInt32() : 0;
             var protocol = root.TryGetProperty("protocol", out var protocolElement) ? protocolElement.GetInt32() : 0;
+            var storeInstanceId = root.TryGetProperty("storeInstanceId", out var storeElement)
+                ? storeElement.GetString() ?? string.Empty
+                : string.Empty;
+            var watcherSessionId = root.TryGetProperty("watcherSessionId", out var sessionElement)
+                ? sessionElement.GetString() ?? string.Empty
+                : string.Empty;
             var utc = DateTime.Parse(
                 utcText,
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
-            return new Heartbeat(pid, utc, schema, protocol);
+            return new Heartbeat(pid, utc, schema, protocol, storeInstanceId, watcherSessionId);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
             or FormatException or InvalidOperationException or KeyNotFoundException)

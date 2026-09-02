@@ -71,7 +71,7 @@ public class PullSweepEverywhereTests
     {
         using var fixture = FixtureCopy.Create();
         _ = CliRunner.Run("init", "-p", fixture.Root);
-        HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow.AddSeconds(-2));
+        using var watcher = WriteCurrentHeartbeat(fixture.Root, DateTime.UtcNow.AddSeconds(-2));
 
         var (exitCode, stdOut, _) = CliRunner.Run("who-uses", "Assets/Scripts/Foo.cs", "-p", fixture.Root, "--verbose");
 
@@ -85,7 +85,7 @@ public class PullSweepEverywhereTests
     {
         using var fixture = FixtureCopy.Create();
         _ = CliRunner.Run("init", "-p", fixture.Root);
-        HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow.AddSeconds(-30));
+        HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow.AddSeconds(-30), "stale-store", "stale-session");
 
         var (exitCode, stdOut, _) = CliRunner.Run("who-uses", "Assets/Scripts/Foo.cs", "-p", fixture.Root, "--verbose");
 
@@ -98,7 +98,7 @@ public class PullSweepEverywhereTests
     {
         using var fixture = FixtureCopy.Create();
         _ = CliRunner.Run("init", "-p", fixture.Root);
-        HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow.AddSeconds(-1));
+        using var watcher = WriteCurrentHeartbeat(fixture.Root, DateTime.UtcNow.AddSeconds(-1));
 
         var (exitCode, stdOut, _) = CliRunner.Run("stats", "-p", fixture.Root, "--verbose");
 
@@ -165,6 +165,15 @@ public class PullSweepEverywhereTests
         var utc = DateTime.UtcNow.AddSeconds(-2).ToString("O", System.Globalization.CultureInfo.InvariantCulture);
         var schemaPart = schemaField is { } s ? $",\"schema\":{s}" : "";
         File.WriteAllText(path, $"{{\"pid\":999,\"utc\":\"{utc}\"{schemaPart}}}");
+    }
+
+    private static WatcherLock.WatcherLease WriteCurrentHeartbeat(string projectRoot, DateTime utc)
+    {
+        using var engine = UnBramble.Core.UnBrambleEngine.Open(projectRoot);
+        var watcher = WatcherLock.TryAcquire(projectRoot);
+        Assert.NotNull(watcher);
+        watcher.PublishFreshness(() => HeartbeatFile.Write(projectRoot, pid: 999, utc, engine.StoreInstanceId, watcher.SessionId));
+        return watcher;
     }
 
     [Fact]

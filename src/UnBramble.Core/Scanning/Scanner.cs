@@ -471,14 +471,24 @@ public sealed class Scanner
         ConcurrentBag<SlowDirEntry> slowDirs)
     {
         var full = Path.Combine(projectRoot, rootRelativeOnDisk.Replace('/', Path.DirectorySeparatorChar));
-        if (!Directory.Exists(full))
+        FileAttributes rootAttributes;
+        try
+        {
+            rootAttributes = File.GetAttributes(full);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             // Roots that don't exist on disk are silently skipped (LocalPackages usually won't exist).
             return;
         }
 
+        if (!rootAttributes.HasFlag(FileAttributes.Directory))
+        {
+            return;
+        }
+
         var realPath = Path.GetFullPath(full);
-        var isJunction = IsReparsePoint(realPath);
+        var isJunction = rootAttributes.HasFlag(FileAttributes.ReparsePoint);
         string? resolvedTarget = null;
         if (isJunction)
         {
@@ -568,11 +578,6 @@ public sealed class Scanner
             rawEntries = [.. new DirectoryInfo(realDirPath).EnumerateFileSystemInfos()];
             rawEntries.Sort((left, right) => CompareStable(left.Name, right.Name));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            warnings.Add($"warning: could not enumerate '{projectPrefix}': {ex.Message}");
-            return;
-        }
         finally
         {
             enumStopwatch.Stop();
@@ -592,19 +597,11 @@ public sealed class Scanner
             var name = info.Name;
             rawNames.Add(name);
 
-            FileAttributes attributes;
-            try
-            {
-                // Already part of the enumeration record on Windows -- no fresh syscall. (Not
-                // true of LastWriteTimeUtc for DIRECTORY entries specifically -- see the comment
-                // where a folder's ScannedFileEntry is built below.)
-                attributes = info.Attributes;
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                warnings.Add($"warning: could not stat '{projectPrefix}/{name}': {ex.Message}");
-                continue;
-            }
+            // Already part of the enumeration record on Windows -- no fresh syscall. (Not true
+            // of LastWriteTimeUtc for DIRECTORY entries specifically -- see the comment where a
+            // folder's ScannedFileEntry is built below.) Access failures propagate so an
+            // incomplete snapshot can never be mistaken for authoritative deletion.
+            var attributes = info.Attributes;
 
             var isDirectory = attributes.HasFlag(FileAttributes.Directory);
             if (isDirectory)
@@ -630,16 +627,7 @@ public sealed class Scanner
 
                 // Files (unlike directories) don't have the parent-index staleness quirk --
                 // LastWriteTimeUtc/Length straight from the enumeration record is reliable here.
-                long mtimeTicks;
-                try
-                {
-                    mtimeTicks = info.LastWriteTimeUtc.Ticks;
-                }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                {
-                    warnings.Add($"warning: could not stat '{projectPrefix}/{name}': {ex.Message}");
-                    continue;
-                }
+                var mtimeTicks = info.LastWriteTimeUtc.Ticks;
 
                 if (name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
                 {
@@ -647,16 +635,7 @@ public sealed class Scanner
                 }
                 else
                 {
-                    long length;
-                    try
-                    {
-                        length = ((FileInfo)info).Length;
-                    }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-                    {
-                        warnings.Add($"warning: could not stat '{projectPrefix}/{name}': {ex.Message}");
-                        continue;
-                    }
+                    var length = ((FileInfo)info).Length;
 
                     fileCandidates.Add((name, info.FullName, mtimeTicks, length));
                 }
@@ -820,23 +799,11 @@ public sealed class Scanner
         bool isDirectory;
         try
         {
-            if (Directory.Exists(fullPath))
-            {
-                isDirectory = true;
-            }
-            else if (File.Exists(fullPath))
-            {
-                isDirectory = false;
-            }
-            else
-            {
-                return null; // Gone -- the caller's diff treats this as a removal.
-            }
+            isDirectory = File.GetAttributes(fullPath).HasFlag(FileAttributes.Directory);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
-            warnings.Add($"warning: could not stat '{projectRelativePath}': {ex.Message}");
-            return null;
+            return null; // Gone -- the caller's diff treats this as a removal.
         }
 
         if (HiddenAssetRules.IsHidden(leafName, isDirectory))
@@ -850,7 +817,15 @@ public sealed class Scanner
         }
 
         var metaPath = fullPath + ".meta";
-        var hasMeta = File.Exists(metaPath);
+        bool hasMeta;
+        try
+        {
+            hasMeta = !File.GetAttributes(metaPath).HasFlag(FileAttributes.Directory);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            hasMeta = false;
+        }
         string? guid = null;
         long? metaMtime = null;
         if (hasMeta)
@@ -937,23 +912,15 @@ public sealed class Scanner
 
     private static string? TryReadMetaGuid(string metaFullPath, string ownerProjectPath, List<string> warnings)
     {
-        try
+        using var reader = new BoundedLineReader(metaFullPath, OversizedLinePolicy.CompactHexYamlScalar);
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
         {
-            using var reader = new BoundedLineReader(metaFullPath, OversizedLinePolicy.CompactHexYamlScalar);
-            string? line;
-            while ((line = reader.ReadLine()) is not null)
+            var match = RegexPatterns.MetaGuid().Match(line);
+            if (match.Success)
             {
-                var match = RegexPatterns.MetaGuid().Match(line);
-                if (match.Success)
-                {
-                    return match.Groups[1].Value.ToLowerInvariant();
-                }
+                return match.Groups[1].Value.ToLowerInvariant();
             }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            warnings.Add($"warning: could not read meta for '{ownerProjectPath}': {ex.Message}");
-            return null;
         }
 
         warnings.Add($"warning: meta for '{ownerProjectPath}' has no guid line");

@@ -12,6 +12,18 @@ internal sealed class BoundedLineReader : TextReader
     internal const int MaxMaterializedLineChars = 1024 * 1024;
 
     private const int ReadBufferChars = 16 * 1024;
+    private const int OpenAttemptCount = 5;
+    private static readonly TimeSpan OpenRetryDelay = TimeSpan.FromMilliseconds(50);
+    private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, true);
+    private static readonly Encoding StrictUtf16Le = new UnicodeEncoding(false, false, true);
+    private static readonly Encoding StrictUtf16Be = new UnicodeEncoding(true, false, true);
+    private static readonly Encoding StrictUtf32Le = new UTF32Encoding(false, false, true);
+    private static readonly Encoding StrictUtf32Be = new UTF32Encoding(true, false, true);
+    private static readonly byte[] Utf32BePreamble = [0x00, 0x00, 0xfe, 0xff];
+    private static readonly byte[] Utf32LePreamble = [0xff, 0xfe, 0x00, 0x00];
+    private static readonly byte[] Utf8Preamble = [0xef, 0xbb, 0xbf];
+    private static readonly byte[] Utf16BePreamble = [0xfe, 0xff];
+    private static readonly byte[] Utf16LePreamble = [0xff, 0xfe];
 
     private readonly StreamReader _reader;
     private readonly string _fullPath;
@@ -29,17 +41,80 @@ internal sealed class BoundedLineReader : TextReader
         // operations, but deliberately deny concurrent in-place writes: this handle must see one
         // internally consistent file version. A replacement schedules its new version through
         // the normal watcher event path.
-        var stream = new FileStream(
-            fullPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read | FileShare.Delete);
-        _reader = new StreamReader(
-            stream,
-            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
-            detectEncodingFromByteOrderMarks: true);
+        var stream = OpenWithRetry(fullPath);
+        var (encoding, preambleLength) = DetectEncoding(stream);
+        stream.Position = preambleLength;
+        _reader = new StreamReader(stream, encoding, detectEncodingFromByteOrderMarks: false);
         _fullPath = fullPath;
         _oversizedLinePolicy = oversizedLinePolicy;
+    }
+
+    private static FileStream OpenWithRetry(string fullPath)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return new FileStream(
+                    fullPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read | FileShare.Delete);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt >= OpenAttemptCount)
+                {
+                    throw;
+                }
+
+                Thread.Sleep(OpenRetryDelay);
+            }
+        }
+    }
+
+    private static (Encoding Encoding, int PreambleLength) DetectEncoding(FileStream stream)
+    {
+        Span<byte> prefix = stackalloc byte[4];
+        var count = 0;
+        while (count < prefix.Length)
+        {
+            var read = stream.Read(prefix[count..]);
+            if (read == 0)
+            {
+                break;
+            }
+
+            count += read;
+        }
+
+        var bytes = prefix[..count];
+        if (bytes.StartsWith(Utf32BePreamble))
+        {
+            return (StrictUtf32Be, 4);
+        }
+
+        if (bytes.StartsWith(Utf32LePreamble))
+        {
+            return (StrictUtf32Le, 4);
+        }
+
+        if (bytes.StartsWith(Utf8Preamble))
+        {
+            return (StrictUtf8, 3);
+        }
+
+        if (bytes.StartsWith(Utf16BePreamble))
+        {
+            return (StrictUtf16Be, 2);
+        }
+
+        if (bytes.StartsWith(Utf16LePreamble))
+        {
+            return (StrictUtf16Le, 2);
+        }
+
+        return (StrictUtf8, 0);
     }
 
     public override string? ReadLine()

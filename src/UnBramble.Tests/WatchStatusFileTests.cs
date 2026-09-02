@@ -130,7 +130,7 @@ public class WatchStatusFileTests
     public void Write_LivesAlongsideHeartbeatFile_NeverOverwritesIt()
     {
         using var fixture = FixtureCopy.Create();
-        UnBramble.Core.Freshness.HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow);
+        UnBramble.Core.Freshness.HeartbeatFile.Write(fixture.Root, pid: 999, DateTime.UtcNow, "store", "session");
 
         WatchStatusFile.Write(fixture.Root, SampleSnapshot(fixture.Root));
 

@@ -30,6 +30,7 @@ public sealed class UnBrambleEngine : IDisposable
 
     private readonly UnBrambleStore _store;
     private FileStream? _queryLease;
+    private FileStream? _legacyWatcherGuard;
 
     // Watch-only persistent Roslyn compilation cache (see CsCompilationCache's own doc comment).
     // Null by default -- every one-shot CLI verb (init/index/stats/who-uses/etc.) and the pull-
@@ -87,6 +88,8 @@ public sealed class UnBrambleEngine : IDisposable
     public bool WasCreated { get; }
 
     public bool SchemaWasReset { get; }
+
+    public string StoreInstanceId => _store.StoreInstanceId;
 
     public IReadOnlyList<string> OpenWarnings { get; }
 
@@ -417,11 +420,8 @@ public sealed class UnBrambleEngine : IDisposable
     /// ids within one call, and no file id is ever split across two chunks (each dirty file is
     /// parsed and queued exactly once) — the cross-file rename-sensitive delete ordering this
     /// could otherwise threaten already happened earlier, inside <c>ApplyDiff</c>'s own
-    /// transaction, untouched by this method. Parse warnings are collected into a
-    /// <see cref="ConcurrentBag{T}"/> (order is a race across workers) and sorted before being
-    /// returned so the reported warning order stays stable run-to-run, matching the store's own
-    /// query layer, which reads every table back through an explicit <c>ORDER BY</c> for exactly
-    /// this reason.
+    /// transaction, untouched by this method. Read failures propagate out of the pass instead of
+    /// publishing empty references for a file an editor or scanner temporarily has locked.
     /// </summary>
     private List<string> ReparseDirtyFiles(IReadOnlyList<string> dirtyPaths)
     {
@@ -432,7 +432,6 @@ public sealed class UnBrambleEngine : IDisposable
 
         var rows = _store.LoadFileRows(dirtyPaths);
         var parser = new ReferenceParser();
-        var warningBag = new ConcurrentBag<string>();
 
         const int ChunkSize = 1500;
         using var pending = new BlockingCollection<(long FileId, ParsedFileRefs Refs)>(boundedCapacity: ChunkSize * 4);
@@ -444,7 +443,7 @@ public sealed class UnBrambleEngine : IDisposable
                 Parallel.ForEach(
                     rows,
                     new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                    row => pending.Add(ParseOneDirtyFile(row, parser, warningBag)));
+                    row => pending.Add(ParseOneDirtyFile(row, parser)));
             }
             finally
             {
@@ -475,10 +474,10 @@ public sealed class UnBrambleEngine : IDisposable
         // (as an AggregateException) instead of silently swallowing it.
         producer.GetAwaiter().GetResult();
 
-        return [.. warningBag.OrderBy(w => w, StringComparer.Ordinal)];
+        return [];
     }
 
-    private (long FileId, ParsedFileRefs Refs) ParseOneDirtyFile(FileRow row, ReferenceParser parser, ConcurrentBag<string> warnings)
+    private (long FileId, ParsedFileRefs Refs) ParseOneDirtyFile(FileRow row, ReferenceParser parser)
     {
         if (row.IdentityOnly || row.Kind == FileKind.Script)
         {
@@ -489,30 +488,13 @@ public sealed class UnBrambleEngine : IDisposable
         var contentRefs = ParsedFileRefs.Empty;
         if (row.Kind != FileKind.Folder)
         {
-            try
-            {
-                if (File.Exists(fullPath))
-                {
-                    contentRefs = parser.ParseContentSource(fullPath, row.Path, row.Guid);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                warnings.Add($"warning: could not parse '{row.Path}': {ex.Message}");
-            }
+            contentRefs = parser.ParseContentSource(fullPath, row.Path, row.Guid);
         }
 
         IReadOnlyList<GuidRefRow> metaRefs = [];
         if (row.MetaMtime is not null)
         {
-            try
-            {
-                metaRefs = parser.ParseMetaOwnerRefs(fullPath + ".meta", row.Guid);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                warnings.Add($"warning: could not parse meta for '{row.Path}': {ex.Message}");
-            }
+            metaRefs = parser.ParseMetaOwnerRefs(fullPath + ".meta", row.Guid);
         }
 
         var combined = metaRefs.Count == 0
@@ -1436,36 +1418,54 @@ public sealed class UnBrambleEngine : IDisposable
     public FreshnessOutcome EnsureFresh(Action<ScanProgress>? onScanProgress = null, Action<string>? onPhase = null, bool waitForConcurrentSweep = true)
     {
         ReleaseQueryLease();
-
-        while (true)
+        var legacyWatcherGuard = Freshness.WatcherLock.TryAcquireLegacyGuard(ProjectRoot);
+        if (legacyWatcherGuard is null)
         {
-            var outcome = EnsureFreshCore(onScanProgress, onPhase, waitForConcurrentSweep);
-            if (!waitForConcurrentSweep)
-            {
-                return outcome;
-            }
+            throw new InvalidOperationException(
+                "a legacy watcher is active and cannot be safely observed concurrently; run 'unbramble stop', then retry the query");
+        }
 
-            // EnsureFresh and the graph query are separate API calls. Close that boundary by
-            // taking the shared side of the same cross-process lease every mutation owns, then
-            // recheck the durable marker while no writer can start. If a writer failed while we
-            // waited, release and let the next loop recover it; otherwise retain the lease until
-            // this engine (the one-shot CLI query scope) is disposed.
-            FileStream? queryLease = IndexReadLock.Acquire(ProjectRoot, onPhase);
-            try
+        try
+        {
+            while (true)
             {
-                if (_store.IsIndexComplete())
+                var outcome = EnsureFreshCore(onScanProgress, onPhase, waitForConcurrentSweep);
+                if (!waitForConcurrentSweep)
                 {
-                    _queryLease = queryLease;
-                    queryLease = null;
+                    _legacyWatcherGuard = legacyWatcherGuard;
+                    legacyWatcherGuard = null;
                     return outcome;
                 }
-            }
-            finally
-            {
-                queryLease?.Dispose();
-            }
 
-            onPhase?.Invoke("freshness: an overlapping index update did not complete -- recovering before answering");
+                // EnsureFresh and the graph query are separate API calls. Close that boundary by
+                // taking the shared side of the same cross-process lease every current mutation
+                // owns, then recheck the durable marker while no current writer can start. The
+                // shared-open legacy guard spans freshness evaluation and remains held for the
+                // query, so an older FileShare.None watcher can't bypass that lease or race an
+                // incomplete-index recovery before its ownership is detected.
+                FileStream? queryLease = IndexReadLock.Acquire(ProjectRoot, onPhase);
+                try
+                {
+                    if (_store.IsIndexComplete())
+                    {
+                        _queryLease = queryLease;
+                        queryLease = null;
+                        _legacyWatcherGuard = legacyWatcherGuard;
+                        legacyWatcherGuard = null;
+                        return outcome;
+                    }
+                }
+                finally
+                {
+                    queryLease?.Dispose();
+                }
+
+                onPhase?.Invoke("freshness: an overlapping index update did not complete -- recovering before answering");
+            }
+        }
+        finally
+        {
+            legacyWatcherGuard?.Dispose();
         }
     }
 
@@ -1481,8 +1481,13 @@ public sealed class UnBrambleEngine : IDisposable
             return RecoverIncompleteIndex(onScanProgress, onPhase, waitForConcurrentSweep);
         }
 
+        using var watcherSnapshot = Freshness.WatcherLock.TryAcquireSnapshot(ProjectRoot, out var snapshotUnavailableReason);
         var heartbeat = HeartbeatFile.TryRead(ProjectRoot);
         var heartbeatIsFresh = heartbeat is { } hb && HeartbeatFreshness.IsFresh(hb.UtcTimestamp, DateTime.UtcNow, HeartbeatFreshness.DefaultStaleThreshold);
+        var watcherIsActive = watcherSnapshot is null || watcherSnapshot.IsWatcherActive;
+        var heartbeatIsCompatible = heartbeat is { } compatibleHeartbeat
+            && watcherSnapshot is { IsWatcherActive: true }
+            && IsCompatibleHeartbeat(compatibleHeartbeat, watcherSnapshot.SessionId);
 
         // A fresh heartbeat is only TRUSTED when its writer stamped both the schema and mutation
         // protocol this binary expects, and this very open didn't just reset the store. Found by
@@ -1490,7 +1495,12 @@ public sealed class UnBrambleEngine : IDisposable
         // watcher from the previous binary keeps heartbeating right through the upgrade, while
         // this binary's open just dropped and recreated every table -- trusting that heartbeat
         // would answer from an empty store, silently. The one thing freshness must never be.
-        if (heartbeatIsFresh && IsCompatibleHeartbeat(heartbeat!.Value) && !SchemaWasReset && _store.IsIndexComplete())
+        if (heartbeatIsFresh
+            && heartbeatIsCompatible
+            && watcherSnapshot is { IsFreshnessSuppressed: false }
+            && !WasCreated
+            && !SchemaWasReset
+            && _store.IsIndexComplete())
         {
             // Auto-spawn telemetry only (docs/architecture.md, "Auto-spawn watcher") -- this
             // marker plays no role in the freshness decision above (already made) or in any
@@ -1499,17 +1509,15 @@ public sealed class UnBrambleEngine : IDisposable
             // (AutoIdleGate) -- best-effort, and never allowed to affect this or any other
             // query's correctness.
             AutoWatchMarkers.TouchLastQuery(ProjectRoot, DateTime.UtcNow);
-            return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - heartbeat.Value.UtcTimestamp);
+            return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - heartbeat!.Value.UtcTimestamp);
         }
 
-        var watcherProbe = Freshness.WatcherLock.TryAcquire(ProjectRoot);
-        var watcherIsActive = watcherProbe is null;
-        if (watcherProbe is not null)
+        if (watcherSnapshot is { IsWatcherActive: false })
         {
             // No watcher is currently active -- release immediately (this call isn't becoming a
             // watcher), then claim the finite writer lease. Another one-shot query/index may
             // already own that second lock even though the watcher lock was free.
-            watcherProbe.Dispose();
+            watcherSnapshot.Dispose();
             var writerLease = IndexWriterLock.TryAcquire(ProjectRoot);
             if (writerLease is not null)
             {
@@ -1520,15 +1528,22 @@ public sealed class UnBrambleEngine : IDisposable
             }
         }
 
-        if (watcherIsActive && heartbeatIsFresh && !IsCompatibleHeartbeat(heartbeat!.Value))
+        if (watcherIsActive
+            && heartbeatIsFresh
+            && (watcherSnapshot is { IsWatcherActive: true } && !heartbeatIsCompatible
+                || watcherSnapshot is null && snapshotUnavailableReason == Freshness.WatcherLock.SnapshotUnavailableReason.ExclusiveOwner))
         {
             // A watcher from before the current mutation protocol never maintains the durable
             // completeness marker. Sweeping alongside it still leaves a gap in which that old
             // process can partially commit another batch, so require retirement instead of
             // pretending its writes can be made safe by one more check.
             throw new InvalidOperationException(
-                "a watcher from an older unbramble version is still running and cannot safely vouch for this index; run 'unbramble stop', then retry the query");
+                "the active watcher heartbeat does not match this database, watcher session, or unbramble version; run 'unbramble stop', then retry the query");
         }
+
+        // Don't carry the transition gate into the polling loop below: each iteration must be
+        // able to capture a new stable snapshot after the active watcher finishes promotion.
+        watcherSnapshot?.Dispose();
 
         // The marker can flip after the early check above while another process is starting a
         // mutation. Don't enter the watcher-lifetime wait for a state that only the finite writer
@@ -1602,31 +1617,37 @@ public sealed class UnBrambleEngine : IDisposable
                 return RecoverIncompleteIndex(onScanProgress, onPhase, waitForConcurrentSweep: true);
             }
 
+            using var watcherSnapshot = Freshness.WatcherLock.TryAcquireSnapshot(ProjectRoot, out var snapshotUnavailableReason);
             var heartbeat = HeartbeatFile.TryRead(ProjectRoot);
-            var watcherProbe = Freshness.WatcherLock.TryAcquire(ProjectRoot);
-            var watcherIsActive = watcherProbe is null;
+            var watcherIsActive = watcherSnapshot is null || watcherSnapshot.IsWatcherActive;
             if (heartbeat is { } h && HeartbeatFreshness.IsFresh(h.UtcTimestamp, DateTime.UtcNow, HeartbeatFreshness.DefaultStaleThreshold))
             {
-                // Same schema/protocol trust rule as EnsureFresh. Only attribute an incompatible
-                // heartbeat to a live old watcher when the watcher lifetime lock is actually
-                // held; a stale file can otherwise coexist with an unrelated one-shot writer.
-                if (watcherIsActive && !IsCompatibleHeartbeat(h))
+                var heartbeatIsCompatible = watcherSnapshot is { IsWatcherActive: true }
+                    && IsCompatibleHeartbeat(h, watcherSnapshot.SessionId);
+
+                // Same stable-snapshot trust rule as EnsureFresh. A transition in progress is a
+                // normal wait state; an exclusive legacy owner or a stable current owner whose
+                // claim mismatches must be retired.
+                if (watcherIsActive
+                    && (watcherSnapshot is { IsWatcherActive: true } && !heartbeatIsCompatible
+                        || watcherSnapshot is null && snapshotUnavailableReason == Freshness.WatcherLock.SnapshotUnavailableReason.ExclusiveOwner))
                 {
                     throw new InvalidOperationException(
-                        "a watcher from an older unbramble version is still running and cannot safely vouch for this index; run 'unbramble stop', then retry the query");
+                        "the active watcher heartbeat does not match this database, watcher session, or unbramble version; run 'unbramble stop', then retry the query");
                 }
 
-                if (_store.IsIndexComplete())
+                if (heartbeatIsCompatible
+                    && watcherSnapshot is { IsFreshnessSuppressed: false }
+                    && _store.IsIndexComplete())
                 {
-                    watcherProbe?.Dispose();
                     AutoWatchMarkers.TouchLastQuery(ProjectRoot, DateTime.UtcNow);
                     return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - h.UtcTimestamp);
                 }
             }
 
-            if (watcherProbe is not null)
+            if (watcherSnapshot is { IsWatcherActive: false })
             {
-                watcherProbe.Dispose();
+                watcherSnapshot.Dispose();
                 var writerLease = IndexWriterLock.TryAcquire(ProjectRoot);
                 if (writerLease is not null)
                 {
@@ -1641,9 +1662,12 @@ public sealed class UnBrambleEngine : IDisposable
 
     private static readonly TimeSpan ConcurrentSweepPollInterval = TimeSpan.FromMilliseconds(250);
 
-    private static bool IsCompatibleHeartbeat(HeartbeatFile.Heartbeat heartbeat) =>
+    private bool IsCompatibleHeartbeat(HeartbeatFile.Heartbeat heartbeat, string? watcherSessionId) =>
         heartbeat.Schema == UnBrambleStore.CurrentSchemaVersion
-        && heartbeat.Protocol == HeartbeatFile.CurrentProtocolVersion;
+        && heartbeat.Protocol == HeartbeatFile.CurrentProtocolVersion
+        && string.Equals(heartbeat.StoreInstanceId, StoreInstanceId, StringComparison.Ordinal)
+        && !string.IsNullOrEmpty(heartbeat.WatcherSessionId)
+        && string.Equals(heartbeat.WatcherSessionId, watcherSessionId, StringComparison.Ordinal);
 
     private string ToFullPath(string projectRelativePath) =>
         Path.Combine(ProjectRoot, projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -2735,6 +2759,8 @@ public sealed class UnBrambleEngine : IDisposable
     {
         _queryLease?.Dispose();
         _queryLease = null;
+        _legacyWatcherGuard?.Dispose();
+        _legacyWatcherGuard = null;
     }
 
     public void Dispose()

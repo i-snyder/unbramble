@@ -154,6 +154,458 @@ public class WatcherHostTests
         }
     }
 
+    [Fact]
+    public void LockedAssetBatch_IsRetriedWithoutPublishingEmptyReferencesOrSuccessHeartbeat()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var diagnostics = new ConcurrentQueue<string>();
+
+        var options = FastOptions() with
+        {
+            HeartbeatIdleCadence = TimeSpan.FromMilliseconds(100),
+            LockRetryInterval = TimeSpan.FromSeconds(2),
+        };
+        using var host = new WatcherHost(engine, options, onDiagnostic: diagnostics.Enqueue);
+        host.Start();
+        try
+        {
+            var assetPath = fixture.Combine("Assets", "Data", "A.asset");
+            using (var locked = new FileStream(assetPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                locked.SetLength(0);
+                locked.Write(System.Text.Encoding.UTF8.GetBytes(
+                    "%YAML 1.1\n--- !u!114 &1\nMonoBehaviour:\n  m_Name: changed\n"));
+                locked.Flush(flushToDisk: true);
+
+                Poll.Until(
+                    () => diagnostics.Any(line => line.Contains("batch failed", StringComparison.Ordinal)),
+                    timeout: TimeSpan.FromSeconds(10),
+                    message: "the locked watcher batch never failed visibly");
+
+                Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+                Thread.Sleep(TimeSpan.FromMilliseconds(400));
+                Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+
+                using var reader = UnBrambleEngine.Open(fixture.Root);
+                var b = reader.ResolveQueryTarget("Assets/Data/B.asset").Target;
+                Assert.NotNull(b);
+                Assert.Contains(
+                    reader.WhoUses(b, transitive: false, depthCap: 1).Results,
+                    result => result.SourcePath == "Assets/Data/A.asset");
+            }
+
+            Poll.Until(
+                () =>
+                {
+                    var b = engine.ResolveQueryTarget("Assets/Data/B.asset").Target;
+                    return b is not null
+                        && engine.WhoUses(b, transitive: false, depthCap: 1).Results.All(
+                            result => result.SourcePath != "Assets/Data/A.asset");
+                },
+                timeout: TimeSpan.FromSeconds(15),
+                message: "the watcher never retried the locked asset after it was released");
+            Poll.Until(
+                () => HeartbeatFile.TryRead(fixture.Root) is not null,
+                message: "a successful retry never resumed heartbeat publication");
+        }
+        finally
+        {
+            host.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task AcceptedEvent_InvalidatesHeartbeatThroughoutDebounceUntilCommit()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var diagnostics = new ConcurrentQueue<string>();
+        var options = FastOptions() with
+        {
+            DebounceInterval = TimeSpan.FromSeconds(2),
+            HeartbeatIdleCadence = TimeSpan.FromMilliseconds(100),
+        };
+
+        using var host = new WatcherHost(engine, options, onDiagnostic: diagnostics.Enqueue);
+        host.Start();
+        UnBrambleEngine? queryEngine = null;
+        try
+        {
+            Assert.NotNull(HeartbeatFile.TryRead(fixture.Root));
+            var assetPath = fixture.Combine("Assets", "Data", "A.asset");
+            File.WriteAllText(assetPath, "%YAML 1.1\n--- !u!114 &1\nMonoBehaviour:\n  m_Name: debounce\n");
+
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("ACCEPTED path=Assets/Data/A.asset", StringComparison.OrdinalIgnoreCase)),
+                message: "the asset edit was never accepted by the watcher");
+
+            Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+            Thread.Sleep(TimeSpan.FromMilliseconds(400));
+            Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+
+            queryEngine = UnBrambleEngine.Open(fixture.Root);
+            var queryTask = Task.Run(() => queryEngine.EnsureFresh());
+            var duringDebounce = await Task.WhenAny(queryTask, Task.Delay(TimeSpan.FromMilliseconds(500)));
+            Assert.NotSame(queryTask, duringDebounce);
+
+            var outcome = await queryTask.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(outcome.SweepPerformed);
+            Assert.True(
+                outcome.HeartbeatAge is not null || outcome.ConcurrentUpdateCompleted,
+                "the query should finish from either the watcher's published heartbeat or the batch commit it directly waited for");
+        }
+        finally
+        {
+            queryEngine?.Dispose();
+            host.Stop();
+        }
+    }
+
+    [Fact]
+    public void EventQueuedDuringBatch_PreventsFirstBatchFromRepublishingHeartbeat()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var diagnostics = new ConcurrentQueue<string>();
+        using var firstBatchApplied = new ManualResetEventSlim();
+        using var secondBatchApplied = new ManualResetEventSlim();
+        var batchCount = 0;
+        var heartbeatMissingAfterFirstBatch = false;
+        var options = FastOptions() with { HeartbeatIdleCadence = TimeSpan.FromMilliseconds(100) };
+        IDisposable? writerBlocker = null;
+
+        using var host = new WatcherHost(
+            engine,
+            options,
+            onEvent: watcherEvent =>
+            {
+                if (watcherEvent != WatcherEvent.BatchApplied)
+                {
+                    return;
+                }
+
+                var count = Interlocked.Increment(ref batchCount);
+                if (count == 1)
+                {
+                    heartbeatMissingAfterFirstBatch = HeartbeatFile.TryRead(fixture.Root) is null;
+                    firstBatchApplied.Set();
+                }
+                else if (count == 2)
+                {
+                    secondBatchApplied.Set();
+                }
+            },
+            onDiagnostic: diagnostics.Enqueue);
+
+        host.Start();
+        try
+        {
+            writerBlocker = IndexWriterLock.Acquire(fixture.Root);
+            var firstPath = fixture.Combine("Assets", "Data", "A.asset");
+            File.AppendAllText(firstPath, "\n");
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("debounce fired", StringComparison.Ordinal)),
+                message: "the first batch never began while the writer lease was blocked");
+
+            var secondPath = fixture.Combine("Assets", "Data", "B.asset");
+            File.AppendAllText(secondPath, "\n");
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("ACCEPTED path=Assets/Data/B.asset", StringComparison.OrdinalIgnoreCase)),
+                message: "the second edit was not queued during the first batch");
+
+            writerBlocker.Dispose();
+            writerBlocker = null;
+
+            Assert.True(firstBatchApplied.Wait(TimeSpan.FromSeconds(15)), "the first batch never completed");
+            Assert.True(heartbeatMissingAfterFirstBatch, "the first batch published a heartbeat while a second accepted edit was pending");
+            Assert.True(secondBatchApplied.Wait(TimeSpan.FromSeconds(15)), "the queued second batch never completed");
+            Poll.Until(
+                () => HeartbeatFile.TryRead(fixture.Root) is not null,
+                message: "heartbeat publication did not resume after all queued batches committed");
+        }
+        finally
+        {
+            writerBlocker?.Dispose();
+            host.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ErrorResync_CannotPublishWhileDebouncedBatchIsWaitingToRun()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var diagnostics = new ConcurrentQueue<string>();
+        using var errorResyncCompleted = new ManualResetEventSlim();
+        using var batchApplied = new ManualResetEventSlim();
+        var heartbeatMissingAtResyncCompletion = false;
+        IDisposable? writerBlocker = null;
+        using var host = new WatcherHost(
+            engine,
+            FastOptions(),
+            onEvent: watcherEvent =>
+            {
+                if (watcherEvent == WatcherEvent.ErrorResync)
+                {
+                    heartbeatMissingAtResyncCompletion = HeartbeatFile.TryRead(fixture.Root) is null;
+                    errorResyncCompleted.Set();
+                }
+                else if (watcherEvent == WatcherEvent.BatchApplied)
+                {
+                    batchApplied.Set();
+                }
+            },
+            onDiagnostic: diagnostics.Enqueue);
+
+        host.Start();
+        Task? resyncTask = null;
+        try
+        {
+            writerBlocker = IndexWriterLock.Acquire(fixture.Root);
+            resyncTask = Task.Run(host.SimulateWatcherError);
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("acquired database gate", StringComparison.Ordinal)),
+                message: "the error resync never reached the blocked writer lease");
+
+            File.AppendAllText(fixture.Combine("Assets", "Data", "A.asset"), "\n");
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("ACCEPTED path=Assets/Data/A.asset", StringComparison.OrdinalIgnoreCase)),
+                message: "the edit was not accepted while the resync was blocked");
+            await Task.Delay(TimeSpan.FromMilliseconds(400));
+
+            writerBlocker.Dispose();
+            writerBlocker = null;
+
+            Assert.True(errorResyncCompleted.Wait(TimeSpan.FromSeconds(15)), "the error resync never completed");
+            Assert.True(heartbeatMissingAtResyncCompletion, "the resync published freshness while an accepted batch was still pending");
+            Assert.True(batchApplied.Wait(TimeSpan.FromSeconds(15)), "the pending batch never ran after the resync");
+            Poll.Until(
+                () => HeartbeatFile.TryRead(fixture.Root) is not null,
+                message: "heartbeat publication did not resume after the resync and batch both committed");
+        }
+        finally
+        {
+            writerBlocker?.Dispose();
+            host.Stop();
+            if (resyncTask is not null)
+            {
+                await resyncTask.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task QueuedErrorResync_PreventsBatchAheadOfItFromPublishingFreshness()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var diagnostics = new ConcurrentQueue<string>();
+        using var batchApplied = new ManualResetEventSlim();
+        using var errorResyncCompleted = new ManualResetEventSlim();
+        var heartbeatMissingAtBatchCompletion = false;
+        IDisposable? writerBlocker = null;
+        using var host = new WatcherHost(
+            engine,
+            FastOptions(),
+            onEvent: watcherEvent =>
+            {
+                if (watcherEvent == WatcherEvent.BatchApplied)
+                {
+                    heartbeatMissingAtBatchCompletion = HeartbeatFile.TryRead(fixture.Root) is null;
+                    batchApplied.Set();
+                }
+                else if (watcherEvent == WatcherEvent.ErrorResync)
+                {
+                    errorResyncCompleted.Set();
+                }
+            },
+            onDiagnostic: diagnostics.Enqueue);
+
+        host.Start();
+        Task? errorTask = null;
+        try
+        {
+            writerBlocker = IndexWriterLock.Acquire(fixture.Root);
+            File.AppendAllText(fixture.Combine("Assets", "Data", "A.asset"), "\n");
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("debounce fired", StringComparison.Ordinal)),
+                message: "the batch never entered the operation gate");
+
+            errorTask = Task.Run(host.SimulateWatcherError);
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("intent registered", StringComparison.Ordinal)),
+                message: "the error resync never registered while waiting behind the batch");
+
+            writerBlocker.Dispose();
+            writerBlocker = null;
+
+            Assert.True(batchApplied.Wait(TimeSpan.FromSeconds(15)), "the batch never completed");
+            Assert.True(heartbeatMissingAtBatchCompletion, "the batch published freshness while an error resync was queued behind it");
+            Assert.True(errorResyncCompleted.Wait(TimeSpan.FromSeconds(15)), "the queued error resync never completed");
+            await errorTask.WaitAsync(TimeSpan.FromSeconds(15));
+            Poll.Until(
+                () => HeartbeatFile.TryRead(fixture.Root) is not null,
+                message: "heartbeat publication did not resume after the queued resync committed");
+        }
+        finally
+        {
+            writerBlocker?.Dispose();
+            host.Stop();
+            if (errorTask is not null)
+            {
+                await errorTask.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+        }
+    }
+
+    [Fact]
+    public void FailedErrorResync_BlocksLaterBatchFreshnessUntilAFullResyncSucceeds()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var diagnostics = new ConcurrentQueue<string>();
+        using var batchApplied = new ManualResetEventSlim();
+        using var host = new WatcherHost(
+            engine,
+            FastOptions(),
+            onEvent: watcherEvent =>
+            {
+                if (watcherEvent == WatcherEvent.BatchApplied)
+                {
+                    batchApplied.Set();
+                }
+            },
+            onDiagnostic: diagnostics.Enqueue);
+
+        host.Start();
+        var intentPath = IndexWriterLock.IntentPathFor(fixture.Root);
+        try
+        {
+            File.Delete(intentPath);
+            Directory.CreateDirectory(intentPath);
+
+            host.SimulateWatcherError();
+            Assert.Contains(
+                diagnostics,
+                line => line.Contains("self-heal/error-resync sweep: FAILED", StringComparison.Ordinal));
+            Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+
+            Directory.Delete(intentPath);
+            using (File.Create(intentPath))
+            {
+            }
+
+            File.AppendAllText(fixture.Combine("Assets", "Data", "A.asset"), "\n");
+            Assert.True(batchApplied.Wait(TimeSpan.FromSeconds(15)), "the unrelated targeted batch never completed");
+            Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+            using (var suppressedSnapshot = WatcherLock.TryAcquireSnapshot(fixture.Root, out var unavailableReason))
+            {
+                Assert.NotNull(suppressedSnapshot);
+                Assert.Equal(WatcherLock.SnapshotUnavailableReason.None, unavailableReason);
+                Assert.True(suppressedSnapshot.IsFreshnessSuppressed);
+            }
+
+            host.SimulateWatcherError();
+            Poll.Until(
+                () => HeartbeatFile.TryRead(fixture.Root) is not null,
+                message: "a successful full resync did not clear the required-resync latch");
+            using var freshSnapshot = WatcherLock.TryAcquireSnapshot(fixture.Root, out var freshUnavailableReason);
+            Assert.NotNull(freshSnapshot);
+            Assert.Equal(WatcherLock.SnapshotUnavailableReason.None, freshUnavailableReason);
+            Assert.False(freshSnapshot.IsFreshnessSuppressed);
+        }
+        finally
+        {
+            if (Directory.Exists(intentPath))
+            {
+                Directory.Delete(intentPath);
+            }
+
+            host.Stop();
+        }
+    }
+
+    [Fact]
+    public async Task ErrorResync_CannotRunInsidePromotionAndLeaveFreshnessSuppressed()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        using var catchupStarted = new ManualResetEventSlim();
+        using var promotionPaused = new ManualResetEventSlim();
+        using var continuePromotion = new ManualResetEventSlim();
+        var diagnostics = new ConcurrentQueue<string>();
+        var heartbeatMissingWhenPromoted = false;
+        IDisposable? writerBlocker = IndexWriterLock.Acquire(fixture.Root);
+        using var host = new WatcherHost(
+            engine,
+            FastOptions(),
+            onEvent: watcherEvent =>
+            {
+                if (watcherEvent == WatcherEvent.PromotionCatchupSweepStarted)
+                {
+                    catchupStarted.Set();
+                }
+                else if (watcherEvent == WatcherEvent.PromotionCatchupSweepCompleted)
+                {
+                    promotionPaused.Set();
+                    continuePromotion.Wait();
+                }
+                else if (watcherEvent == WatcherEvent.Promoted)
+                {
+                    heartbeatMissingWhenPromoted = HeartbeatFile.TryRead(fixture.Root) is null;
+                }
+            },
+            onDiagnostic: diagnostics.Enqueue);
+
+        var startTask = Task.Run(host.Start);
+        Task? errorTask = null;
+        try
+        {
+            Assert.True(catchupStarted.Wait(TimeSpan.FromSeconds(5)), "promotion never entered its catch-up sweep");
+            writerBlocker.Dispose();
+            writerBlocker = null;
+            Assert.True(promotionPaused.Wait(TimeSpan.FromSeconds(10)), "promotion never reached the post-catch-up pause");
+
+            errorTask = Task.Run(host.SimulateWatcherError);
+            Poll.Until(
+                () => diagnostics.Any(line => line.Contains("intent registered", StringComparison.Ordinal)),
+                message: "the error resync never registered while promotion was paused");
+            var whilePromotionPaused = await Task.WhenAny(errorTask, Task.Delay(TimeSpan.FromMilliseconds(750)));
+            Assert.NotSame(errorTask, whilePromotionPaused);
+
+            continuePromotion.Set();
+            await startTask.WaitAsync(TimeSpan.FromSeconds(15));
+            await errorTask.WaitAsync(TimeSpan.FromSeconds(15));
+
+            Assert.True(host.IsActive);
+            Assert.True(heartbeatMissingWhenPromoted, "promotion published freshness while an error resync was queued behind it");
+            Assert.NotNull(HeartbeatFile.TryRead(fixture.Root));
+            using var snapshot = WatcherLock.TryAcquireSnapshot(fixture.Root, out var unavailableReason);
+            Assert.NotNull(snapshot);
+            Assert.Equal(WatcherLock.SnapshotUnavailableReason.None, unavailableReason);
+            Assert.False(snapshot.IsFreshnessSuppressed);
+        }
+        finally
+        {
+            continuePromotion.Set();
+            writerBlocker?.Dispose();
+            host.Stop();
+            await startTask.WaitAsync(TimeSpan.FromSeconds(15));
+            if (errorTask is not null)
+            {
+                await errorTask.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+        }
+    }
+
     // ---- Test 2: asset + meta reparsed as one unit ------------------------------------------
 
     [Fact]

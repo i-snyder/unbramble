@@ -12,7 +12,7 @@ public class HeartbeatFileTests
         using var fixture = FixtureCopy.Create();
         var utc = new DateTime(2026, 3, 4, 5, 6, 7, DateTimeKind.Utc);
 
-        HeartbeatFile.Write(fixture.Root, pid: 4242, utc);
+        HeartbeatFile.Write(fixture.Root, pid: 4242, utc, "store-a", "session-a");
         var read = HeartbeatFile.TryRead(fixture.Root);
 
         Assert.NotNull(read);
@@ -20,6 +20,8 @@ public class HeartbeatFileTests
         Assert.Equal(utc, read.Value.UtcTimestamp);
         Assert.Equal(UnBramble.Core.Store.UnBrambleStore.CurrentSchemaVersion, read.Value.Schema);
         Assert.Equal(HeartbeatFile.CurrentProtocolVersion, read.Value.Protocol);
+        Assert.Equal("store-a", read.Value.StoreInstanceId);
+        Assert.Equal("session-a", read.Value.WatcherSessionId);
     }
 
     [Fact]
@@ -45,10 +47,10 @@ public class HeartbeatFileTests
     public void Write_OverwritesPreviousHeartbeatAtomically()
     {
         using var fixture = FixtureCopy.Create();
-        HeartbeatFile.Write(fixture.Root, 1, DateTime.UtcNow);
+        HeartbeatFile.Write(fixture.Root, 1, DateTime.UtcNow, "store-a", "session-a");
         var second = DateTime.UtcNow.AddSeconds(1);
 
-        HeartbeatFile.Write(fixture.Root, 2, second);
+        HeartbeatFile.Write(fixture.Root, 2, second, "store-b", "session-b");
         var read = HeartbeatFile.TryRead(fixture.Root);
 
         Assert.NotNull(read);
@@ -96,7 +98,7 @@ public class HeartbeatFileTests
                 barrier.SignalAndWait();
                 for (var i = 0; i < iterationsPerThread; i++)
                 {
-                    HeartbeatFile.Write(fixture.Root, pid: 1000 + threadIndex, DateTime.UtcNow);
+                    HeartbeatFile.Write(fixture.Root, pid: 1000 + threadIndex, DateTime.UtcNow, "store", $"session-{threadIndex}");
                 }
             }
             catch (Exception ex)

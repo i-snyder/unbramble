@@ -1,3 +1,4 @@
+using System.Text;
 using UnBramble.Core.Model;
 using UnBramble.Core.Scanning;
 
@@ -108,15 +109,21 @@ public sealed class WatcherHost : IDisposable
     // Guards _pendingPaths, _buffering, and _debounceTimer together so "add to the pending set"
     // and "decide whether to (re)schedule the debounce timer" stay one atomic step.
     private readonly object _pendingGate = new();
+    // Serializes every operation that may suppress and later republish freshness. The database
+    // gate alone prevents concurrent SQLite use, but it doesn't prevent one completed operation
+    // from publishing a heartbeat while another operation is queued to mutate the store.
+    private readonly object _updateOperationGate = new();
     private HashSet<string> _pendingPaths = new(StringComparer.OrdinalIgnoreCase);
     private bool _buffering;
+    private int _pendingFullResyncs;
+    private bool _fullResyncRequired;
 
     private List<(RootMapping Root, FileSystemWatcher Watcher)>? _watchers;
     private Timer? _debounceTimer;
     private Timer? _heartbeatIdleTimer;
     private Timer? _selfHealTimer;
     private Timer? _lockRetryTimer;
-    private FileStream? _lockHandle;
+    private WatcherLock.WatcherLease? _lockHandle;
     private volatile bool _stopRequested;
 
     // WriteHeartbeat
@@ -218,7 +225,6 @@ public sealed class WatcherHost : IDisposable
         }
 
         _lockHandle = handle;
-        HeartbeatFile.Invalidate(_engine.ProjectRoot);
         Promote();
         return true;
     }
@@ -365,7 +371,6 @@ public sealed class WatcherHost : IDisposable
         }
 
         _lockHandle = handle;
-        HeartbeatFile.Invalidate(_engine.ProjectRoot);
         Promote();
     }
 
@@ -379,48 +384,51 @@ public sealed class WatcherHost : IDisposable
     /// </summary>
     private void Promote()
     {
-        lock (_pendingGate)
+        lock (_updateOperationGate)
         {
-            _buffering = true;
-            _pendingPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        }
+            lock (_pendingGate)
+            {
+                _buffering = true;
+                _pendingPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
 
-        StartFileSystemWatchers();
-        _onEvent?.Invoke(WatcherEvent.PromotionBufferingStarted);
+            StartFileSystemWatchers();
+            _onEvent?.Invoke(WatcherEvent.PromotionBufferingStarted);
 
-        _onEvent?.Invoke(WatcherEvent.PromotionCatchupSweepStarted);
-        lock (_dbGate)
-        {
-            _engine.RunIndex(full: false);
-        }
-
-        _onEvent?.Invoke(WatcherEvent.PromotionCatchupSweepCompleted);
-
-        HashSet<string> buffered;
-        lock (_pendingGate)
-        {
-            buffered = _pendingPaths;
-            _pendingPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            _buffering = false;
-        }
-
-        if (buffered.Count > 0)
-        {
+            _onEvent?.Invoke(WatcherEvent.PromotionCatchupSweepStarted);
             lock (_dbGate)
             {
-                _engine.ApplyTargetedUpdate(buffered);
+                _engine.RunIndex(full: false);
             }
+
+            _onEvent?.Invoke(WatcherEvent.PromotionCatchupSweepCompleted);
+
+            HashSet<string> buffered;
+            lock (_pendingGate)
+            {
+                buffered = _pendingPaths;
+                _pendingPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                _buffering = false;
+            }
+
+            if (buffered.Count > 0)
+            {
+                lock (_dbGate)
+                {
+                    _engine.ApplyTargetedUpdate(buffered);
+                }
+            }
+
+            _onEvent?.Invoke(WatcherEvent.PromotionBufferDrained);
+
+            _onEvent?.Invoke(WatcherEvent.PromotionHeartbeatStarted);
+            ResumeHeartbeatAfterSuccessfulCommitIfIdle();
+            StartHeartbeatIdleTimer();
+            StartSelfHealTimer();
+
+            IsActive = true;
+            _onEvent?.Invoke(WatcherEvent.Promoted);
         }
-
-        _onEvent?.Invoke(WatcherEvent.PromotionBufferDrained);
-
-        _onEvent?.Invoke(WatcherEvent.PromotionHeartbeatStarted);
-        WriteHeartbeat();
-        StartHeartbeatIdleTimer();
-        StartSelfHealTimer();
-
-        IsActive = true;
-        _onEvent?.Invoke(WatcherEvent.Promoted);
     }
 
     // ---- FileSystemWatchers ---------------------------------------------------------------
@@ -509,6 +517,7 @@ public sealed class WatcherHost : IDisposable
             var pendingCount = _pendingPaths.Count;
             if (!_buffering)
             {
+                SuppressHeartbeat();
                 _debounceTimer ??= new Timer(_ => ProcessBatch(), null, Timeout.Infinite, Timeout.Infinite);
                 _debounceTimer.Change(_options.DebounceInterval, Timeout.InfiniteTimeSpan);
                 _onDiagnostic?.Invoke($"[watch-fsw] {eventKind} ACCEPTED path={ownerPath} pending={pendingCount} debounce-armed_ms={_options.DebounceInterval.TotalMilliseconds:F0}");
@@ -587,13 +596,23 @@ public sealed class WatcherHost : IDisposable
         _onDiagnostic?.Invoke($"[watch-fsw] FileSystemWatcher.Error: {exception?.GetType().Name} {exception?.Message ?? "(no exception captured)"}");
         // After the resync, same completion contract (and the same latent race) as
         // OnSelfHealTick's SelfHealSweep -- see that method's own comment.
-        RunFullResync();
-        _onEvent?.Invoke(WatcherEvent.ErrorResync);
+        if (RunFullResync())
+        {
+            _onEvent?.Invoke(WatcherEvent.ErrorResync);
+        }
     }
 
     // ---- Debounce / batch processing -------------------------------------------------------
 
     private void ProcessBatch()
+    {
+        lock (_updateOperationGate)
+        {
+            ProcessBatchCore();
+        }
+    }
+
+    private void ProcessBatchCore()
     {
         if (_stopRequested)
         {
@@ -614,12 +633,39 @@ public sealed class WatcherHost : IDisposable
             return;
         }
 
-        lock (_dbGate)
+        try
         {
-            _engine.ApplyTargetedUpdate(batch);
+            SuppressHeartbeat();
+            lock (_dbGate)
+            {
+                _engine.ApplyTargetedUpdate(batch);
+            }
+        }
+        catch (Exception ex)
+        {
+            _onDiagnostic?.Invoke($"[watch-fsw] batch failed: {ex.GetType().Name}: {ex.Message}");
+            Interlocked.Exchange(ref _fsActivitySinceLastSelfHeal, 1);
+
+            if (IsTransientFileAccess(ex))
+            {
+                lock (_pendingGate)
+                {
+                    _pendingPaths.UnionWith(batch);
+                    if (!_stopRequested && !_buffering)
+                    {
+                        _debounceTimer ??= new Timer(_ => ProcessBatch(), null, Timeout.Infinite, Timeout.Infinite);
+                        var retryDelay = _options.LockRetryInterval > _options.DebounceInterval
+                            ? _options.LockRetryInterval
+                            : _options.DebounceInterval;
+                        _debounceTimer.Change(retryDelay, Timeout.InfiniteTimeSpan);
+                    }
+                }
+            }
+
+            return;
         }
 
-        WriteHeartbeat();
+        ResumeHeartbeatAfterSuccessfulCommitIfIdle();
         _onEvent?.Invoke(WatcherEvent.BatchApplied);
     }
 
@@ -631,8 +677,71 @@ public sealed class WatcherHost : IDisposable
     {
         lock (_heartbeatGate)
         {
-            HeartbeatFile.Write(_engine.ProjectRoot, Environment.ProcessId, DateTime.UtcNow);
+            if (_lockHandle is not { IsFreshnessSuppressed: false })
+            {
+                return;
+            }
+
+            WriteHeartbeatCore();
         }
+    }
+
+    private void SuppressHeartbeat()
+    {
+        lock (_heartbeatGate)
+        {
+            var lockHandle = _lockHandle;
+            if (lockHandle is null)
+            {
+                return;
+            }
+
+            try
+            {
+                lockHandle.SuppressFreshness(() => HeartbeatFile.Invalidate(_engine.ProjectRoot));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _onDiagnostic?.Invoke($"[watch-fsw] heartbeat invalidation failed while work is pending: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+    }
+
+    private void ResumeHeartbeatAfterSuccessfulCommitIfIdle()
+    {
+        lock (_pendingGate)
+        {
+            if (_buffering || _pendingPaths.Count > 0 || _pendingFullResyncs > 0 || _fullResyncRequired)
+            {
+                return;
+            }
+
+            ResumeHeartbeatAndWrite();
+        }
+    }
+
+    private void ResumeHeartbeatAndWrite()
+    {
+        lock (_heartbeatGate)
+        {
+            _lockHandle?.PublishFreshness(WriteHeartbeatCore);
+        }
+    }
+
+    private void WriteHeartbeatCore()
+    {
+        var watcherSessionId = _lockHandle?.SessionId;
+        if (watcherSessionId is null)
+        {
+            return;
+        }
+
+        HeartbeatFile.Write(
+            _engine.ProjectRoot,
+            Environment.ProcessId,
+            DateTime.UtcNow,
+            _engine.StoreInstanceId,
+            watcherSessionId);
     }
 
     // Heartbeat refresh: "after each processed batch" is already covered by ProcessBatch/
@@ -705,8 +814,10 @@ public sealed class WatcherHost : IDisposable
         // DB state) read it exactly that way -- raising it first was a real, load-sensitive race
         // (observed as a repeated full-suite-only flake: the poll won against the sweep's own
         // commit and asserted against a DB the sweep hadn't written yet).
-        RunFullResync();
-        _onEvent?.Invoke(WatcherEvent.SelfHealSweep);
+        if (RunFullResync())
+        {
+            _onEvent?.Invoke(WatcherEvent.SelfHealSweep);
+        }
     }
 
     /// <summary>
@@ -715,7 +826,47 @@ public sealed class WatcherHost : IDisposable
     /// one event for the directory itself, none for descendants — a documented, accepted gap),
     /// so assume nothing and re-derive the whole inventory.
     /// </summary>
-    private void RunFullResync()
+    private bool RunFullResync()
+    {
+        // Register before waiting on the operation gate. An FSW error means events may already
+        // have been lost, so the operation currently ahead of this resync must not publish a
+        // freshness claim in the queueing window.
+        lock (_pendingGate)
+        {
+            _pendingFullResyncs++;
+            _fullResyncRequired = true;
+            SuppressHeartbeat();
+        }
+        _onDiagnostic?.Invoke("[watch-fsw] self-heal/error-resync sweep: intent registered");
+
+        lock (_updateOperationGate)
+        {
+            var succeeded = false;
+            try
+            {
+                succeeded = RunFullResyncCore();
+                return succeeded;
+            }
+            finally
+            {
+                lock (_pendingGate)
+                {
+                    _pendingFullResyncs--;
+                    if (succeeded && _pendingFullResyncs == 0)
+                    {
+                        _fullResyncRequired = false;
+                    }
+
+                    if (succeeded)
+                    {
+                        ResumeHeartbeatAfterSuccessfulCommitIfIdle();
+                    }
+                }
+            }
+        }
+    }
+
+    private bool RunFullResyncCore()
     {
         // Brackets the RunIndex call so a self-heal/error-resync sweep is directly visible as a
         // span in the log, correlated against the [cs-analysis] RunIndex(full=False) summary
@@ -725,9 +876,19 @@ public sealed class WatcherHost : IDisposable
         var stopwatch = _onDiagnostic is null ? null : System.Diagnostics.Stopwatch.StartNew();
         _onDiagnostic?.Invoke("[watch-fsw] self-heal/error-resync sweep: starting RunIndex(full=false)");
 
-        lock (_dbGate)
+        try
         {
-            _engine.RunIndex(full: false);
+            lock (_dbGate)
+            {
+                _onDiagnostic?.Invoke("[watch-fsw] self-heal/error-resync sweep: acquired database gate");
+                _engine.RunIndex(full: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Interlocked.Exchange(ref _fsActivitySinceLastSelfHeal, 1);
+            _onDiagnostic?.Invoke($"[watch-fsw] self-heal/error-resync sweep: FAILED {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
 
         if (stopwatch is not null)
@@ -735,6 +896,27 @@ public sealed class WatcherHost : IDisposable
             _onDiagnostic!($"[watch-fsw] self-heal/error-resync sweep: finished elapsed_ms={stopwatch.ElapsedMilliseconds}");
         }
 
-        WriteHeartbeat();
+        return true;
+    }
+
+    private static bool IsTransientFileAccess(Exception exception)
+    {
+        if (exception is InvalidDataException or DecoderFallbackException)
+        {
+            return false;
+        }
+
+        if (exception is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+
+        if (exception is AggregateException aggregate)
+        {
+            return aggregate.Flatten().InnerExceptions.Count > 0
+                && aggregate.Flatten().InnerExceptions.All(IsTransientFileAccess);
+        }
+
+        return exception.InnerException is { } inner && IsTransientFileAccess(inner);
     }
 }

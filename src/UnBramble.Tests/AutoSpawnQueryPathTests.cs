@@ -55,12 +55,15 @@ public class AutoSpawnQueryPathTests
     {
         using var fixture = FixtureCopy.Create();
         _ = CliRunner.Run("init", "-p", fixture.Root);
+        using var engine = UnBramble.Core.UnBrambleEngine.Open(fixture.Root);
+        using var watcher = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcher);
 
         // Written inside the console lock rather than before it: a heartbeat is only fresh for
         // 15s, and this call can queue behind any number of other test classes' CLI runs. See
         // CliRunner.Run(Action, ...).
         var (exitCode, _, _) = CliRunner.Run(
-            () => HeartbeatFile.Write(fixture.Root, pid: 12345, DateTime.UtcNow),
+            () => watcher.PublishFreshness(() => HeartbeatFile.Write(fixture.Root, pid: 12345, DateTime.UtcNow, engine.StoreInstanceId, watcher.SessionId)),
             "resolve", "Assets/Scripts/Foo.cs", "-p", fixture.Root);
 
         Assert.Equal(0, exitCode);
