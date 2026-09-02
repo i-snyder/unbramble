@@ -221,6 +221,130 @@ public class EnsureFreshConcurrencyTests
         }
     }
 
+    [Fact]
+    public void EnsureFresh_LiveWatcherWithoutCurrentProtocol_RequiresRetirement()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcherLock);
+        WriteRawHeartbeatWithoutProtocol(fixture.Root);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => engine.EnsureFresh());
+
+        Assert.Contains("older unbramble version", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("unbramble stop", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EnsureFresh_HoldsSharedReadLeaseThroughQuery_AndBlocksWriterUntilDispose()
+    {
+        using var fixture = FixtureCopy.Create();
+        var engine = UnBrambleEngine.Open(fixture.Root);
+        UnBrambleEngine? secondEngine = null;
+        try
+        {
+            engine.RunIndex(full: false);
+            HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow);
+
+            var outcome = engine.EnsureFresh();
+            Assert.False(outcome.SweepPerformed);
+
+            // Query leases are shared with one another, not a global single-query mutex.
+            secondEngine = UnBrambleEngine.Open(fixture.Root);
+            var secondOutcome = secondEngine.EnsureFresh();
+            Assert.False(secondOutcome.SweepPerformed);
+
+            var writerTask = Task.Run(() =>
+            {
+                using var writerLease = IndexWriterLock.Acquire(fixture.Root);
+            });
+
+            var first = await Task.WhenAny(writerTask, Task.Delay(TimeSpan.FromMilliseconds(600)));
+            Assert.NotSame(writerTask, first);
+
+            var target = engine.ResolveQueryTarget("Assets/Scripts/Foo.cs").Target;
+            Assert.NotNull(target);
+            Assert.NotEmpty(engine.WhoUses(target, transitive: false, depthCap: 1).Results);
+
+            engine.Dispose();
+            var afterFirstReader = await Task.WhenAny(writerTask, Task.Delay(TimeSpan.FromMilliseconds(400)));
+            Assert.NotSame(writerTask, afterFirstReader);
+
+            secondEngine.Dispose();
+            secondEngine = null;
+            await writerTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            secondEngine?.Dispose();
+            engine.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task EnsureFresh_WaitingWriterIntent_BlocksLaterReadersUntilWriterFinishes()
+    {
+        using var fixture = FixtureCopy.Create();
+        var firstEngine = UnBrambleEngine.Open(fixture.Root);
+        var secondEngine = UnBrambleEngine.Open(fixture.Root);
+        using var writerWaiting = new ManualResetEventSlim();
+        using var writerAcquired = new ManualResetEventSlim();
+        using var releaseWriter = new ManualResetEventSlim();
+        Task? writerTask = null;
+        Task<UnBramble.Core.Model.FreshnessOutcome>? secondQueryTask = null;
+        try
+        {
+            firstEngine.RunIndex(full: false);
+            HeartbeatFile.Write(fixture.Root, Environment.ProcessId, DateTime.UtcNow);
+            firstEngine.EnsureFresh();
+
+            writerTask = Task.Run(() =>
+            {
+                using var writerLease = IndexWriterLock.Acquire(
+                    fixture.Root,
+                    message =>
+                    {
+                        if (message.Contains("active queries", StringComparison.Ordinal))
+                        {
+                            writerWaiting.Set();
+                        }
+                    });
+                writerAcquired.Set();
+                releaseWriter.Wait();
+            });
+
+            Assert.True(writerWaiting.Wait(TimeSpan.FromSeconds(5)), "Writer never established intent while the first query held its read lease.");
+
+            secondQueryTask = Task.Run(() => secondEngine.EnsureFresh());
+            var beforeFirstReaderExits = await Task.WhenAny(secondQueryTask, Task.Delay(TimeSpan.FromMilliseconds(500)));
+            Assert.NotSame(secondQueryTask, beforeFirstReaderExits);
+
+            firstEngine.Dispose();
+            Assert.True(writerAcquired.Wait(TimeSpan.FromSeconds(5)), "Writer did not acquire after the existing reader exited.");
+
+            var whileWriterOwnsLock = await Task.WhenAny(secondQueryTask, Task.Delay(TimeSpan.FromMilliseconds(400)));
+            Assert.NotSame(secondQueryTask, whileWriterOwnsLock);
+
+            releaseWriter.Set();
+            await writerTask.WaitAsync(TimeSpan.FromSeconds(5));
+            var outcome = await secondQueryTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(outcome.SweepPerformed);
+        }
+        finally
+        {
+            releaseWriter.Set();
+            firstEngine.Dispose();
+            secondEngine.Dispose();
+            if (writerTask is not null)
+            {
+                await writerTask.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+    }
+
     private static void SetIndexComplete(string dbPath, bool complete)
     {
         using var connection = new SqliteConnection($"Data Source={dbPath}");
@@ -238,5 +362,15 @@ public class EnsureFreshConcurrencyTests
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT value FROM meta_kv WHERE key = 'index_complete';";
         return command.ExecuteScalar() as string;
+    }
+
+    private static void WriteRawHeartbeatWithoutProtocol(string projectRoot)
+    {
+        var path = HeartbeatFile.PathFor(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var utc = DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        File.WriteAllText(
+            path,
+            $"{{\"pid\":999,\"utc\":\"{utc}\",\"schema\":{UnBramble.Core.Store.UnBrambleStore.CurrentSchemaVersion}}}");
     }
 }

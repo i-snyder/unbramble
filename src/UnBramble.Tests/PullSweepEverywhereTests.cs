@@ -107,9 +107,9 @@ public class PullSweepEverywhereTests
         Assert.Contains("Project:", stdOut, StringComparison.Ordinal);
     }
 
-    // A fresh heartbeat is only trusted when its schema stamp matches this binary's store
-    // shape — the schema-bump upgrade scenario: an old-binary watcher keeps heartbeating while
-    // the new binary drops and rebuilds the store, and trusting it would answer from empty.
+    // A fresh heartbeat is only trusted when both its schema and mutation-protocol stamps match
+    // this binary. An old watcher may share the same SQLite shape but not maintain the current
+    // completeness rules, so schema compatibility alone can't vouch for its writes.
 
     [Fact]
     public void Cli_WhoUses_FreshHeartbeatWithoutSchemaStamp_NotTrusted_StillSweeps()
@@ -134,6 +134,21 @@ public class PullSweepEverywhereTests
 
         var (exitCode, stdOut, _) = CliRunner.Run(
             beforeRun: () => WriteRawHeartbeat(fixture.Root, schemaField: UnBrambleStore.CurrentSchemaVersion - 1),
+            "who-uses", "Assets/Scripts/Foo.cs", "-p", fixture.Root, "--verbose");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("freshness: swept", stdOut, StringComparison.Ordinal);
+        Assert.DoesNotContain("freshness: watcher heartbeat", stdOut, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Cli_WhoUses_FreshHeartbeatWithCurrentSchemaButNoProtocolStamp_NotTrusted_StillSweeps()
+    {
+        using var fixture = FixtureCopy.Create();
+        _ = CliRunner.Run("init", "-p", fixture.Root);
+
+        var (exitCode, stdOut, _) = CliRunner.Run(
+            beforeRun: () => WriteRawHeartbeat(fixture.Root, schemaField: UnBrambleStore.CurrentSchemaVersion),
             "who-uses", "Assets/Scripts/Foo.cs", "-p", fixture.Root, "--verbose");
 
         Assert.Equal(0, exitCode);

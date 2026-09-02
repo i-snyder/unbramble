@@ -218,6 +218,7 @@ public sealed class WatcherHost : IDisposable
         }
 
         _lockHandle = handle;
+        HeartbeatFile.Invalidate(_engine.ProjectRoot);
         Promote();
         return true;
     }
@@ -364,6 +365,7 @@ public sealed class WatcherHost : IDisposable
         }
 
         _lockHandle = handle;
+        HeartbeatFile.Invalidate(_engine.ProjectRoot);
         Promote();
     }
 

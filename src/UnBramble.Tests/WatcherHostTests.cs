@@ -52,6 +52,59 @@ public class WatcherHostTests
         LockRetryInterval: TimeSpan.FromMilliseconds(200),
         SelfHealSweepInterval: selfHeal ?? TimeSpan.FromMinutes(5));
 
+    [Fact]
+    public async Task Promotion_InvalidatesInheritedOldHeartbeat_BeforeCatchupSweep()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var hostEngine = UnBrambleEngine.Open(fixture.Root);
+        hostEngine.RunIndex(full: false);
+        WriteRawHeartbeatWithoutProtocol(fixture.Root);
+
+        IDisposable? writerBlocker = IndexWriterLock.Acquire(fixture.Root);
+        using var promotionStarted = new ManualResetEventSlim();
+        using var host = new WatcherHost(
+            hostEngine,
+            FastOptions(),
+            onEvent: e =>
+            {
+                if (e == WatcherEvent.PromotionCatchupSweepStarted)
+                {
+                    promotionStarted.Set();
+                }
+            });
+        var startTask = Task.Run(host.Start);
+        Task<UnBramble.Core.Model.FreshnessOutcome>? queryTask = null;
+        UnBrambleEngine? queryEngine = null;
+        try
+        {
+            Assert.True(promotionStarted.Wait(TimeSpan.FromSeconds(5)), "Watcher never entered promotion.");
+            Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+
+            queryEngine = UnBrambleEngine.Open(fixture.Root);
+            queryTask = Task.Run(() => queryEngine.EnsureFresh());
+            var whilePromotionBlocked = await Task.WhenAny(queryTask, Task.Delay(TimeSpan.FromMilliseconds(500)));
+            Assert.NotSame(queryTask, whilePromotionBlocked);
+
+            writerBlocker.Dispose();
+            writerBlocker = null;
+
+            await startTask.WaitAsync(TimeSpan.FromSeconds(15));
+            var outcome = await queryTask.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(outcome.ConcurrentSweepInProgress);
+
+            var heartbeat = HeartbeatFile.TryRead(fixture.Root);
+            Assert.NotNull(heartbeat);
+            Assert.Equal(HeartbeatFile.CurrentProtocolVersion, heartbeat.Value.Protocol);
+        }
+        finally
+        {
+            writerBlocker?.Dispose();
+            queryEngine?.Dispose();
+            host.Stop();
+            await startTask.WaitAsync(TimeSpan.FromSeconds(15));
+        }
+    }
+
     // ---- Test 1: create / modify / delete -------------------------------------------------
 
     [Fact]
@@ -408,5 +461,15 @@ public class WatcherHostTests
 
         var answer = engine.WhoUses(resolution.Target, transitive: false, depthCap: UnBrambleEngine.DefaultDepthCap);
         return [.. answer.Results.Select(r => (r.SourcePath, r.Resolved))];
+    }
+
+    private static void WriteRawHeartbeatWithoutProtocol(string projectRoot)
+    {
+        var path = HeartbeatFile.PathFor(projectRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var utc = DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        File.WriteAllText(
+            path,
+            $"{{\"pid\":999,\"utc\":\"{utc}\",\"schema\":{UnBramble.Core.Store.UnBrambleStore.CurrentSchemaVersion}}}");
     }
 }

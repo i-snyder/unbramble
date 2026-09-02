@@ -75,6 +75,11 @@ internal sealed class BoundedLineReader : TextReader
             var content = terminatorOffset < 0 ? remaining : remaining[..terminatorOffset];
             if (!content.IsEmpty)
             {
+                if (ContainsDisallowedControl(content))
+                {
+                    throw InvalidControlCharacterException();
+                }
+
                 sawContent = true;
                 if (!compacted)
                 {
@@ -226,6 +231,22 @@ internal sealed class BoundedLineReader : TextReader
     private InvalidDataException OversizedLineException() => new(
         $"'{_fullPath}' contains an oversized text line at line {_completedLineCount + 1:N0}. " +
         $"Lines longer than {MaxMaterializedLineChars:N0} characters are rejected unless the value is a Unity YAML scalar containing only hexadecimal payload data.");
+
+    private InvalidDataException InvalidControlCharacterException() => new(
+        $"'{_fullPath}' contains a binary control character in text at line {_completedLineCount + 1:N0}.");
+
+    private static bool ContainsDisallowedControl(ReadOnlySpan<char> content)
+    {
+        foreach (var c in content)
+        {
+            if (c == '\0' || c < '\t' || c is '\v' or '\f' or >= '\u000e' and <= '\u001f' or >= '\u007f' and <= '\u009f')
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     protected override void Dispose(bool disposing)
     {

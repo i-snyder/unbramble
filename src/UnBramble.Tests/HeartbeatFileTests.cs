@@ -18,6 +18,8 @@ public class HeartbeatFileTests
         Assert.NotNull(read);
         Assert.Equal(4242, read!.Value.Pid);
         Assert.Equal(utc, read.Value.UtcTimestamp);
+        Assert.Equal(UnBramble.Core.Store.UnBrambleStore.CurrentSchemaVersion, read.Value.Schema);
+        Assert.Equal(HeartbeatFile.CurrentProtocolVersion, read.Value.Protocol);
     }
 
     [Fact]

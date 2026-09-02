@@ -6,14 +6,16 @@ using UnBramble.Core.Store;
 namespace UnBramble.Core.Freshness;
 
 /// <summary>
-/// The watcher's `.unbramble/watcher.heartbeat` file: JSON `{"pid": N, "utc": "...", "schema": V}`,
+/// The watcher's `.unbramble/watcher.heartbeat` file: JSON
+/// `{"pid": N, "utc": "...", "schema": V, "protocol": P}`,
 /// written atomically (temp file + rename) so a reader never observes a half-written file.
 /// Hand-formatted/parsed via <see cref="JsonDocument"/> rather than a reflection-based
 /// serializer — trivial fixed shape, and JsonDocument (unlike JsonSerializer without a
 /// source-generated context) needs no reflection, so it stays NativeAOT-safe for free.
 ///
-/// `schema` (the writer's <see cref="UnBrambleStore.CurrentSchemaVersion"/>) exists because a
-/// heartbeat is a claim about a SPECIFIC store shape: a still-running watcher from an older
+/// `schema` (the writer's <see cref="UnBrambleStore.CurrentSchemaVersion"/>) and `protocol`
+/// exist because a heartbeat is a claim about both a SPECIFIC store shape and the mutation/
+/// completeness rules used to maintain it: a still-running watcher from an older
 /// binary keeps writing fresh heartbeats right through a schema-bump upgrade, and a newer query
 /// binary that trusted one would answer from the store it just dropped and recreated empty —
 /// silently wrong, the one thing freshness must never be. A missing `schema` field (a pre-stamp
@@ -22,10 +24,44 @@ namespace UnBramble.Core.Freshness;
 /// </summary>
 public static class HeartbeatFile
 {
+    /// <summary>
+    /// Version of the cross-process freshness contract independently of the SQLite shape. Bump
+    /// whenever a writer must follow new rules for a heartbeat to vouch for its committed state.
+    /// </summary>
+    public const int CurrentProtocolVersion = 1;
+
     public const string RelativePath = UnBramblePaths.HeartbeatRelativePath;
 
     public static string PathFor(string projectRoot) =>
         UnBramblePaths.RelativeTo(projectRoot, RelativePath);
+
+    /// <summary>
+    /// Removes a previous watcher's claim immediately after a new process wins
+    /// <see cref="WatcherLock"/>. Promotion writes the next heartbeat only after its catch-up
+    /// sweep and buffered-event drain, so queries wait during that window instead of attributing
+    /// a recently stopped old writer's incompatible heartbeat to the new owner.
+    /// </summary>
+    public static void Invalidate(string projectRoot)
+    {
+        var path = PathFor(projectRoot);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Delete(path);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt >= 19)
+                {
+                    throw;
+                }
+
+                Thread.Sleep(TimeSpan.FromMilliseconds(25));
+            }
+        }
+    }
 
     /// <summary>
     /// Atomic write: temp file in the same directory, then <see cref="File.Move(string, string, bool)"/>
@@ -54,7 +90,7 @@ public static class HeartbeatFile
         var directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
 
-        var json = $$"""{"pid":{{pid.ToString(CultureInfo.InvariantCulture)}},"utc":"{{utcNow.ToString("O", CultureInfo.InvariantCulture)}}","schema":{{UnBrambleStore.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture)}}}""";
+        var json = $$"""{"pid":{{pid.ToString(CultureInfo.InvariantCulture)}},"utc":"{{utcNow.ToString("O", CultureInfo.InvariantCulture)}}","schema":{{UnBrambleStore.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture)}},"protocol":{{CurrentProtocolVersion.ToString(CultureInfo.InvariantCulture)}}}""";
         var tempPath = Path.Combine(directory, $"watcher.heartbeat.tmp-{Guid.NewGuid():N}");
         try
         {
@@ -76,9 +112,9 @@ public static class HeartbeatFile
         }
     }
 
-    /// <summary><see cref="Schema"/> is 0 for a heartbeat written before the schema stamp existed
-    /// — deliberately never equal to any real <see cref="UnBrambleStore.CurrentSchemaVersion"/>.</summary>
-    public readonly record struct Heartbeat(int Pid, DateTime UtcTimestamp, int Schema = 0);
+    /// <summary><see cref="Schema"/> or <see cref="Protocol"/> is 0 when its stamp is absent,
+    /// deliberately never equal to any current nonzero contract version.</summary>
+    public readonly record struct Heartbeat(int Pid, DateTime UtcTimestamp, int Schema = 0, int Protocol = 0);
 
     /// <summary>Null for any absent/unreadable/corrupt heartbeat — callers treat null exactly like a stale one (fall back to sweeping).</summary>
     public static Heartbeat? TryRead(string projectRoot)
@@ -86,7 +122,7 @@ public static class HeartbeatFile
         var path = PathFor(projectRoot);
         try
         {
-            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             using var doc = JsonDocument.Parse(stream);
             var root = doc.RootElement;
             var pid = root.GetProperty("pid").GetInt32();
@@ -97,11 +133,12 @@ public static class HeartbeatFile
             }
 
             var schema = root.TryGetProperty("schema", out var schemaElement) ? schemaElement.GetInt32() : 0;
+            var protocol = root.TryGetProperty("protocol", out var protocolElement) ? protocolElement.GetInt32() : 0;
             var utc = DateTime.Parse(
                 utcText,
                 CultureInfo.InvariantCulture,
                 DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
-            return new Heartbeat(pid, utc, schema);
+            return new Heartbeat(pid, utc, schema, protocol);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
             or FormatException or InvalidOperationException or KeyNotFoundException)

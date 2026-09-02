@@ -478,12 +478,18 @@ public sealed class ReferenceParser
         }
 
         var textStart = HasUtf8Bom(bytes) ? 3 : 0;
+        var looksLikeUnityYaml = LooksLikeUnityYaml(bytes[textStart..]);
         for (var i = textStart; i < totalRead; i++)
         {
             var value = buffer[i];
             if (value == 0 || value < 0x09 || value is 0x0b or 0x0c or >= 0x0e and <= 0x1f or 0x7f)
             {
-                return true;
+                // A recognizable YAML file with one damaged/control byte is malformed text, not
+                // evidence that its references are safely ignorable. Send it through the strict
+                // bounded reader so indexing fails loudly instead of publishing false-negative
+                // edges. Null/control evidence only authorizes silent binary skipping when the
+                // content does not identify itself as Unity YAML.
+                return !looksLikeUnityYaml;
             }
         }
 
@@ -506,8 +512,23 @@ public sealed class ReferenceParser
         }
         catch (DecoderFallbackException)
         {
-            return true;
+            // Same asymmetric-safety rule as the control-byte branch above. In particular, a
+            // Windows-1252 or damaged Unity YAML file must not silently lose every outbound edge
+            // merely because its malformed byte happened to fall inside this sniff window.
+            return !looksLikeUnityYaml;
         }
+    }
+
+    private static bool LooksLikeUnityYaml(ReadOnlySpan<byte> bytes)
+    {
+        var start = 0;
+        while (start < bytes.Length && bytes[start] is (byte)' ' or (byte)'\t' or (byte)'\r' or (byte)'\n')
+        {
+            start++;
+        }
+
+        var content = bytes[start..];
+        return content.StartsWith("%YAML"u8) || content.StartsWith("--- !u!"u8);
     }
 
     private static bool HasUtf8Bom(ReadOnlySpan<byte> bytes) =>

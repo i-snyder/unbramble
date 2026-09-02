@@ -3,7 +3,7 @@ namespace UnBramble.Core.Config;
 /// <summary>
 /// Single source of truth for UnBramble's own project-root state directory (`.unbramble/`) and
 /// the well-known file names inside it: the SQLite DB, the watcher heartbeat, the watcher and
-/// finite index-writer locks, the watch-status snapshot, setup rollback receipt, and auto-spawn marker files. Centralized here --
+/// finite index-writer intent/data locks, the watch-status snapshot, setup rollback receipt, and auto-spawn marker files. Centralized here --
 /// rather than each consumer (<c>HeartbeatFile</c>, <c>WatcherLock</c>, <c>WatchStatusFile</c>,
 /// <c>AutoWatchMarkers</c>, <see cref="UnBrambleConfig"/>) carrying its own copy of the directory
 /// name -- so those paths can never drift apart on the directory name, and relocating the
@@ -27,6 +27,7 @@ public static class UnBramblePaths
     public const string DbFileName = "unbramble.db";
     public const string HeartbeatFileName = "watcher.heartbeat";
     public const string WatcherLockFileName = "watcher.lock";
+    public const string IndexWriterIntentLockFileName = "index-writer-intent.lock";
     public const string IndexWriterLockFileName = "index-writer.lock";
     public const string WatchStatusFileName = "watch.status.json";
     public const string LastQueryFileName = "watch.lastquery";
@@ -53,6 +54,8 @@ public static class UnBramblePaths
     public const string HeartbeatRelativePath = $"{StateDirName}/{HeartbeatFileName}";
 
     public const string WatcherLockRelativePath = $"{StateDirName}/{WatcherLockFileName}";
+
+    public const string IndexWriterIntentLockRelativePath = $"{StateDirName}/{IndexWriterIntentLockFileName}";
 
     public const string IndexWriterLockRelativePath = $"{StateDirName}/{IndexWriterLockFileName}";
 

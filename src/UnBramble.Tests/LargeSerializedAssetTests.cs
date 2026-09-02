@@ -174,7 +174,7 @@ public class LargeSerializedAssetTests
     }
 
     [Fact]
-    public void BinaryAsset_WithTruncatedUtf8AtEof_IsSkipped()
+    public void RecognizableYaml_WithTruncatedUtf8AtEof_IsRejectedInsteadOfSkipped()
     {
         using var temp = TempDir.Create();
         var path = Path.Combine(temp.Root, "Truncated.asset");
@@ -185,9 +185,8 @@ public class LargeSerializedAssetTests
         bytes[^1] = 0xc3;
         File.WriteAllBytes(path, bytes);
 
-        var parsed = new ReferenceParser().ParseContentSource(path, "Assets/Truncated.asset", ownGuid: null);
-
-        Assert.Empty(parsed.GuidRefs);
+        Assert.Throws<DecoderFallbackException>(
+            () => new ReferenceParser().ParseContentSource(path, "Assets/Truncated.asset", ownGuid: null));
     }
 
     [Fact]
@@ -208,6 +207,24 @@ public class LargeSerializedAssetTests
 
         Assert.Throws<DecoderFallbackException>(
             () => new ReferenceParser().ParseContentSource(path, "Assets/LateBinary.asset", ownGuid: null));
+    }
+
+    [Fact]
+    public void RecognizableYaml_WithC0OrC1Control_IsRejectedInsteadOfSkipped()
+    {
+        using var temp = TempDir.Create();
+        foreach (var (name, control) in new[] { ("Null", '\0'), ("C1", '\u0085') })
+        {
+            var path = Path.Combine(temp.Root, $"{name}.asset");
+            File.WriteAllText(
+                path,
+                $"%YAML 1.1\n--- !u!114 &1\nMonoBehaviour:\n  m_Text: before{control}after\n",
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            var exception = Assert.Throws<InvalidDataException>(
+                () => new ReferenceParser().ParseContentSource(path, $"Assets/{name}.asset", ownGuid: null));
+            Assert.Contains("control character", exception.Message, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
