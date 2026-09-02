@@ -38,19 +38,12 @@
   Suppress per-guid PASS lines; print only FAIL details and the final summary.
 
 .PARAMETER SelfTest
-  Deliberate-failure self-test (guards against the gate silently passing on stale data): builds
-  a fresh temp fixture copy, indexes it, appends a new guid reference to a .prefab WITHOUT
-  re-indexing, then re-invokes this same script (as a nested script -- see note below) against
-  the now-stale index and asserts it exits 1 and names the injected guid. Exits 0 if the
-  self-test's own assertions hold (i.e. the gate correctly caught the staleness), 1 otherwise.
-
-  Note: since every query verb now stat-sweeps before answering (the pull path), a plain
-  "mutate disk, don't reindex" no longer produces staleness at all -- who-uses would just
-  self-heal before this gate ever saw a
-  mismatch. This self-test forges a fresh watcher.heartbeat file first, which is the one
-  remaining (by-design, accepted) way a query can see stale data: a fresh heartbeat tells the
-  pull path to trust that a live watcher already owns freshness and skip its own sweep. That's
-  exactly the risk surface worth guarding here.
+  Deliberate-failure self-test (guards against the comparator silently passing everything):
+  builds and indexes a fresh temp fixture, then re-invokes this same script with a private
+  test-only mismatch injected into the rg-side result set. It asserts that the gate exits 1 and
+  names the affected guid. Product freshness now deliberately makes stale snapshots difficult
+  to synthesize; the self-test targets the gate's failure/reporting mechanism directly, while
+  verify-all's following normal parity run still exercises real rg and UnBramble results.
 
 .NOTES
   A script invoked via the call operator (&) runs as a nested script scope: `exit N` inside it
@@ -75,7 +68,10 @@ param(
 
     [switch]$Quiet,
 
-    [switch]$SelfTest
+    [switch]$SelfTest,
+
+    # Private recursive-self-test seam. Normal callers must leave this empty.
+    [string]$SelfTestMismatchGuid
 )
 
 $ErrorActionPreference = 'Stop'
@@ -321,7 +317,8 @@ function Invoke-RgParity {
         [string[]]$Guids,
         [string]$ExePath,
         [int]$Sample,
-        [bool]$Quiet
+        [bool]$Quiet,
+        [string]$ForceMismatchGuid
     )
 
     if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
@@ -370,6 +367,10 @@ function Invoke-RgParity {
         $rgOnly = @($rgSet | Where-Object { -not $unbrambleSet.Contains($_) })
         $unbrambleOnly = @($unbrambleSet | Where-Object { -not $rgSet.Contains($_) })
 
+        if ($ForceMismatchGuid -and $guid -ieq $ForceMismatchGuid) {
+            $rgOnly += 'Assets/__rg_parity_deliberate_mismatch__.asset'
+        }
+
         if ($rgOnly.Count -gt 0 -or $unbrambleOnly.Count -gt 0) {
             $mismatchCount++
             Write-Host "FAIL  $guid" -ForegroundColor Red
@@ -411,48 +412,19 @@ function Invoke-SelfTest {
             return 1
         }
 
-        # Forge a fresh watcher.heartbeat BEFORE mutating the fixture, so the
-        # nested rg-parity invocation's `who-uses` call below trusts it and skips its own
-        # pull-path sweep -- otherwise the sweep would self-heal the induced staleness before
-        # this gate ever saw it (see the .PARAMETER SelfTest note above).
-        # The forgery must carry the binary's CURRENT schema stamp (read live from stats, never
-        # hardcoded) -- an unstamped or mismatched heartbeat is deliberately never trusted
-        # (upgrade protection; see HeartbeatFile), which would make the pull path self-heal and
-        # this self-test silently stop testing anything.
-        $statsJson = & $ExePath stats -p $tmp --json
-        if ($statsJson -notmatch '"schemaVersion":(\d+)') {
-            Write-Error "self-test setup: could not read schemaVersion from 'stats --json' output: $statsJson"
-            return 1
-        }
-        $schemaVersion = $Matches[1]
-        $heartbeatDir = Join-Path $tmp '.unbramble'
-        New-Item -ItemType Directory -Force -Path $heartbeatDir | Out-Null
-        $utcNow = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ')
-        Set-Content -LiteralPath (Join-Path $heartbeatDir 'watcher.heartbeat') -Value "{`"pid`":999999,`"utc`":`"$utcNow`",`"schema`":$schemaVersion}" -NoNewline
-
-        # Sanity check: the injected guid must currently NOT be a referencer of Enemy.prefab,
-        # or this self-test wouldn't actually be injecting anything new.
         $injectedGuid = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01' # Assets/Scripts/Foo.cs
-        $enemyPrefab = Join-Path $tmp 'Assets/Prefabs/Enemy.prefab'
-        Add-Content -LiteralPath $enemyPrefab -Value "  m_InjectedSelfTestRef: {fileID: 11500000, guid: $injectedGuid, type: 3} # deliberately unindexed"
-
-        # Deliberately do NOT run 'unbramble index' again -- the stored index now disagrees
-        # with what's on disk, on purpose, and (thanks to the forged heartbeat above) the
-        # pull path won't self-heal it either. Re-invoke this same script (nested; see the
-        # header .NOTES on why `exit` inside it won't kill this self-test) against the now-
-        # stale index and capture both its exit code and everything it printed.
-        $output = & $PSCommandPath -ProjectRoot $tmp -Guids $injectedGuid -ExePath $ExePath -Quiet *>&1 | Out-String
+        $output = & $PSCommandPath -ProjectRoot $tmp -Guids $injectedGuid -ExePath $ExePath -Quiet -SelfTestMismatchGuid $injectedGuid *>&1 | Out-String
         $gateExitCode = $LASTEXITCODE
 
         $exitOk = ($gateExitCode -eq 1)
         $namesGuid = ($output -match [regex]::Escape($injectedGuid))
 
         if ($exitOk -and $namesGuid) {
-            Write-Host "self-test PASS: gate correctly failed (exit $gateExitCode) and named the stale guid" -ForegroundColor Green
+            Write-Host "self-test PASS: gate correctly failed (exit $gateExitCode) and named the mismatched guid" -ForegroundColor Green
             return 0
         }
 
-        Write-Host 'self-test FAIL: the gate did not catch the deliberately-stale index' -ForegroundColor Red
+        Write-Host 'self-test FAIL: the gate did not catch the deliberate mismatch' -ForegroundColor Red
         Write-Host "  expected exit 1, got $gateExitCode; expected guid '$injectedGuid' in output: $namesGuid" -ForegroundColor Red
         Write-Host '  --- captured gate output ---'
         Write-Host $output
@@ -471,4 +443,4 @@ if (-not $ProjectRoot) {
     exit 1
 }
 
-exit (Invoke-RgParity -ProjectRoot $ProjectRoot -Guids $Guids -ExePath $ExePath -Sample $Sample -Quiet:$Quiet.IsPresent)
+exit (Invoke-RgParity -ProjectRoot $ProjectRoot -Guids $Guids -ExePath $ExePath -Sample $Sample -Quiet:$Quiet.IsPresent -ForceMismatchGuid $SelfTestMismatchGuid)

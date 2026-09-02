@@ -265,7 +265,7 @@ if (-not $SkipPublish) {
             # fixture landing in semantic mode.
             $statsOut = & "$repo/publish/unbramble.exe" stats -p $tmp --json
             if ($LASTEXITCODE -ne 0) { Write-Host 'stats failed'; exit 1 }
-            if ($statsOut -notmatch '"schemaVersion":10') { Write-Host "stats did not report schema v10: $statsOut"; exit 1 }
+            if ($statsOut -notmatch '"schemaVersion":11') { Write-Host "stats did not report schema v11: $statsOut"; exit 1 }
             if ($statsOut -notmatch '"nameHints":[1-9]') { Write-Host "stats reported zero name_hints (capture silently broken?): $statsOut"; exit 1 }
         }
 
