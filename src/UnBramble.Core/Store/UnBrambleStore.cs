@@ -489,6 +489,19 @@ public sealed class UnBrambleStore : IDisposable
     }
 
     /// <summary>
+    /// True unless a previous mutating index pass started but did not reach its completion
+    /// commit. A missing key means true for databases created by older binaries; every pass from
+    /// this binary writes the marker before its first mutation.
+    /// </summary>
+    public bool IsIndexComplete() => !string.Equals(QueryMetaValue("index_complete"), "0", StringComparison.Ordinal);
+
+    /// <summary>Persists the crash/failure guard before an index pass mutates inventory or derived rows.</summary>
+    public void MarkIndexIncomplete() => SetMetaValue("index_complete", "0");
+
+    /// <summary>Publishes that every phase of the current index pass completed successfully.</summary>
+    public void MarkIndexComplete() => SetMetaValue("index_complete", "1");
+
+    /// <summary>
     /// Diffs a fresh scan against the current files table and applies the minimal set of
     /// writes. Deletions are applied before insertions within the batch (renames otherwise
     /// look like guid collisions). A path whose guid changed is deleted-then-reinserted

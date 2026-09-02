@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using UnBramble.Core.Config;
 using UnBramble.Core.Model;
+using UnBramble.Core.Parsing;
 
 namespace UnBramble.Core.Scanning;
 
@@ -936,10 +937,18 @@ public sealed class Scanner
 
     private static string? TryReadMetaGuid(string metaFullPath, string ownerProjectPath, List<string> warnings)
     {
-        string content;
         try
         {
-            content = File.ReadAllText(metaFullPath);
+            using var reader = new BoundedLineReader(metaFullPath, OversizedLinePolicy.CompactHexYamlScalar);
+            string? line;
+            while ((line = reader.ReadLine()) is not null)
+            {
+                var match = RegexPatterns.MetaGuid().Match(line);
+                if (match.Success)
+                {
+                    return match.Groups[1].Value.ToLowerInvariant();
+                }
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -947,14 +956,8 @@ public sealed class Scanner
             return null;
         }
 
-        var match = RegexPatterns.MetaGuid().Match(content);
-        if (!match.Success)
-        {
-            warnings.Add($"warning: meta for '{ownerProjectPath}' has no guid line");
-            return null;
-        }
-
-        return match.Groups[1].Value.ToLowerInvariant();
+        warnings.Add($"warning: meta for '{ownerProjectPath}' has no guid line");
+        return null;
     }
 
     // internal (not private): RootLinkTargets (Windows-Defender-exclusion setup) reuses

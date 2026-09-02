@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace UnBramble.Core.Parsing;
@@ -13,8 +14,10 @@ public sealed class ReferenceParser
 {
     private const int MethodNameLookaheadLines = 8;
     private const int ContextMaxLength = 160;
+    private const int BinaryAssetSniffBytes = 8 * 1024;
     private const string NullGuid = "00000000000000000000000000000000";
     private const string DatabasePrefix = "project://database/";
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     // Unity-YAML extensions: document-boundary state machine, GameObject/component
     // tracking, UnityEvent method-name lookahead.
@@ -51,6 +54,11 @@ public sealed class ReferenceParser
 
         if (YamlExtensions.Contains(extension))
         {
+            if (string.Equals(extension, ".asset", StringComparison.OrdinalIgnoreCase) && LooksLikeBinaryAsset(fullPath))
+            {
+                return ParsedFileRefs.Empty;
+            }
+
             var isAnimFile = string.Equals(extension, ".anim", StringComparison.OrdinalIgnoreCase);
             return ParseYaml(fullPath, ownGuid, isAnimFile);
         }
@@ -82,12 +90,17 @@ public sealed class ReferenceParser
     /// source_fileid are NULL, per the DDL comment).
     /// </summary>
     public IReadOnlyList<GuidRefRow> ParseMetaOwnerRefs(string metaFullPath, string? ownGuid) =>
-        File.Exists(metaFullPath) ? ScanGuidOnlyLines(metaFullPath, ownGuid) : [];
+        File.Exists(metaFullPath)
+            ? ScanGuidOnlyLines(metaFullPath, ownGuid, OversizedLinePolicy.CompactHexYamlScalar)
+            : [];
 
-    private static List<GuidRefRow> ScanGuidOnlyLines(string fullPath, string? ownGuid)
+    private static List<GuidRefRow> ScanGuidOnlyLines(
+        string fullPath,
+        string? ownGuid,
+        OversizedLinePolicy oversizedLinePolicy = OversizedLinePolicy.Reject)
     {
         var result = new List<GuidRefRow>();
-        using var reader = new StreamReader(fullPath);
+        using var reader = new BoundedLineReader(fullPath, oversizedLinePolicy);
 
         string? line;
         var lineNo = 0;
@@ -131,7 +144,7 @@ public sealed class ReferenceParser
     {
         var guidRefs = new List<GuidRefRow>();
         var dllRefs = new List<DllRefRow>();
-        using var reader = new StreamReader(fullPath);
+        using var reader = new BoundedLineReader(fullPath, OversizedLinePolicy.Reject);
 
         string? line;
         var lineNo = 0;
@@ -212,8 +225,7 @@ public sealed class ReferenceParser
         var componentLinks = new List<ComponentGameObjectRow>();
         var nameHints = new List<NameHintRow>();
 
-        using var streamReader = new StreamReader(fullPath);
-        using var window = new LineWindow(streamReader);
+        using var window = new LineWindow(new BoundedLineReader(fullPath, OversizedLinePolicy.CompactHexYamlScalar));
 
         int? currentClassId = null;
         string? currentFileId = null;
@@ -406,7 +418,7 @@ public sealed class ReferenceParser
         var pathRefs = new List<PathRefRow>();
         var sourceDir = GetProjectDir(sourceProjectPath);
 
-        using var reader = new StreamReader(fullPath);
+        using var reader = new BoundedLineReader(fullPath, OversizedLinePolicy.Reject);
         string? line;
         var lineNo = 0;
         while ((line = reader.ReadLine()) is not null)
@@ -441,6 +453,73 @@ public sealed class ReferenceParser
 
         return new ParsedFileRefs(guidRefs, pathRefs, [], [], []);
     }
+
+    private static bool LooksLikeBinaryAsset(string fullPath)
+    {
+        using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        var buffer = new byte[BinaryAssetSniffBytes];
+        var totalRead = 0;
+        while (totalRead < buffer.Length)
+        {
+            var read = stream.Read(buffer, totalRead, buffer.Length - totalRead);
+            if (read == 0)
+            {
+                break;
+            }
+
+            totalRead += read;
+        }
+
+        var reachedEndOfFile = stream.Position >= stream.Length;
+        var bytes = buffer.AsSpan(0, totalRead);
+        if (HasUtf16OrUtf32Bom(bytes))
+        {
+            return false;
+        }
+
+        var textStart = HasUtf8Bom(bytes) ? 3 : 0;
+        for (var i = textStart; i < totalRead; i++)
+        {
+            var value = buffer[i];
+            if (value == 0 || value < 0x09 || value is 0x0b or 0x0c or >= 0x0e and <= 0x1f or 0x7f)
+            {
+                return true;
+            }
+        }
+
+        try
+        {
+            var decoder = StrictUtf8.GetDecoder();
+            var decoded = new char[totalRead - textStart];
+            decoder.Convert(
+                buffer,
+                textStart,
+                totalRead - textStart,
+                decoded,
+                0,
+                decoded.Length,
+                flush: reachedEndOfFile,
+                out _,
+                out _,
+                out _);
+            return false;
+        }
+        catch (DecoderFallbackException)
+        {
+            return true;
+        }
+    }
+
+    private static bool HasUtf8Bom(ReadOnlySpan<byte> bytes) =>
+        bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf;
+
+    private static bool HasUtf16OrUtf32Bom(ReadOnlySpan<byte> bytes) =>
+        bytes.Length >= 4 &&
+            ((bytes[0] == 0xff && bytes[1] == 0xfe && bytes[2] == 0x00 && bytes[3] == 0x00)
+             || (bytes[0] == 0x00 && bytes[1] == 0x00 && bytes[2] == 0xfe && bytes[3] == 0xff))
+        || bytes.Length >= 2 &&
+            ((bytes[0] == 0xff && bytes[1] == 0xfe)
+             || (bytes[0] == 0xfe && bytes[1] == 0xff));
 
     private static IEnumerable<string> ExtractPathCandidates(string line)
     {

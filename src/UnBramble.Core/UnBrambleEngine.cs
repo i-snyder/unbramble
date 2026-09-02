@@ -201,6 +201,17 @@ public sealed class UnBrambleEngine : IDisposable
     {
         var stopwatch = Stopwatch.StartNew();
 
+        if (!_store.IsIndexComplete())
+        {
+            full = true;
+            onPhase?.Invoke("the previous index did not complete; rebuilding from scratch");
+        }
+
+        // ApplySweep commits inventory before reference parsing, and reference results themselves
+        // are committed in bounded chunks. Persist this guard first so a crash or fatal parser
+        // rejection can never make that partial state look fresh to the next process.
+        _store.MarkIndexIncomplete();
+
         var isFirstRun = WasCreated;
         if (full)
         {
@@ -286,6 +297,10 @@ public sealed class UnBrambleEngine : IDisposable
             $"added={diff.Added} changed={diff.Changed} removed={diff.Removed} dirtyPaths={diff.DirtyPaths.Count}");
 
         AppendIndexHistory(full, scan, diff, phaseTimings, stopwatch.Elapsed);
+
+        // Last write of a successful pass. Any exception above deliberately leaves the marker at
+        // zero, making the next explicit index or query perform a clean full rebuild.
+        _store.MarkIndexComplete();
 
         return new IndexSummary(ProjectRoot, UnityVersion, DbPath, stopwatch.Elapsed, diff.Added, diff.Changed, diff.Removed, isFirstRun, stats, warnings, phaseTimings);
     }
@@ -1320,6 +1335,14 @@ public sealed class UnBrambleEngine : IDisposable
 
         using var writerLease = IndexWriterLock.Acquire(ProjectRoot, message => _watchCacheDiagnostics?.Invoke(message));
 
+        if (!_store.IsIndexComplete())
+        {
+            var recovery = RunIndexOwned(full: true, onScanProgress: null, onPhase: _watchCacheDiagnostics);
+            return new SweepDiff(recovery.Added, recovery.Changed, recovery.Removed, recovery.Warnings, []);
+        }
+
+        _store.MarkIndexIncomplete();
+
         var scanStopwatch = Stopwatch.StartNew();
         var scanner = new Scanner();
         var scanWarnings = new List<string>();
@@ -1365,6 +1388,8 @@ public sealed class UnBrambleEngine : IDisposable
             $"reparse_ms={reparseStopwatch.ElapsedMilliseconds} cs_ms={csStopwatch.ElapsedMilliseconds} total_ms={totalStopwatch.ElapsedMilliseconds} " +
             $"added={diff.Added} changed={diff.Changed} removed={diff.Removed} dirtyPaths={diff.DirtyPaths.Count}");
 
+        _store.MarkIndexComplete();
+
         return diff with { Warnings = warnings };
     }
 
@@ -1407,6 +1432,16 @@ public sealed class UnBrambleEngine : IDisposable
     /// </param>
     public FreshnessOutcome EnsureFresh(Action<ScanProgress>? onScanProgress = null, Action<string>? onPhase = null, bool waitForConcurrentSweep = true)
     {
+        // An incomplete pass is a different state from an ordinary stale/missing heartbeat. A
+        // live watcher owns WatcherLock for its whole lifetime, including while idle, but only
+        // owns IndexWriterLock during an actual mutation. Recover through the finite writer lock
+        // directly so an idle watcher can never strand this query forever behind its lifetime
+        // lock. RunIndexOwned sees the marker and upgrades the recovery to a clean full rebuild.
+        if (!_store.IsIndexComplete())
+        {
+            return RecoverIncompleteIndex(onScanProgress, onPhase, waitForConcurrentSweep);
+        }
+
         var heartbeat = HeartbeatFile.TryRead(ProjectRoot);
         var heartbeatIsFresh = heartbeat is { } hb && HeartbeatFreshness.IsFresh(hb.UtcTimestamp, DateTime.UtcNow, HeartbeatFreshness.DefaultStaleThreshold);
 
@@ -1416,7 +1451,7 @@ public sealed class UnBrambleEngine : IDisposable
         // watcher from the previous binary keeps heartbeating right through the upgrade, while
         // this binary's open just dropped and recreated every table -- trusting that heartbeat
         // would answer from an empty store, silently. The one thing freshness must never be.
-        if (heartbeatIsFresh && heartbeat!.Value.Schema == UnBrambleStore.CurrentSchemaVersion && !SchemaWasReset)
+        if (heartbeatIsFresh && heartbeat!.Value.Schema == UnBrambleStore.CurrentSchemaVersion && !SchemaWasReset && _store.IsIndexComplete())
         {
             // Auto-spawn telemetry only (docs/architecture.md, "Auto-spawn watcher") -- this
             // marker plays no role in the freshness decision above (already made) or in any
@@ -1445,7 +1480,7 @@ public sealed class UnBrambleEngine : IDisposable
             }
         }
 
-        if (heartbeatIsFresh)
+        if (heartbeatIsFresh && heartbeat!.Value.Schema != UnBrambleStore.CurrentSchemaVersion)
         {
             // The lock holder is alive but its heartbeat failed the schema check above: an
             // older-binary watcher. Waiting on it can never end (it will never write a matching
@@ -1457,6 +1492,14 @@ public sealed class UnBrambleEngine : IDisposable
             return FreshnessOutcome.Swept(RunIndex(full: false, onScanProgress, onPhase));
         }
 
+        // The marker can flip after the early check above while another process is starting a
+        // mutation. Don't enter the watcher-lifetime wait for a state that only the finite writer
+        // lock can resolve.
+        if (!_store.IsIndexComplete())
+        {
+            return RecoverIncompleteIndex(onScanProgress, onPhase, waitForConcurrentSweep);
+        }
+
         if (!waitForConcurrentSweep)
         {
             return FreshnessOutcome.SkippedConcurrentSweep();
@@ -1464,6 +1507,38 @@ public sealed class UnBrambleEngine : IDisposable
 
         onPhase?.Invoke("freshness: another process already owns the index (likely a watcher's first sweep) -- waiting for it instead of racing a duplicate sweep");
         return WaitForConcurrentSweep(onScanProgress, onPhase);
+    }
+
+    private FreshnessOutcome RecoverIncompleteIndex(
+        Action<ScanProgress>? onScanProgress,
+        Action<string>? onPhase,
+        bool waitForConcurrentSweep)
+    {
+        onPhase?.Invoke("freshness: the previous index did not complete -- rebuilding from scratch");
+
+        var writerLease = IndexWriterLock.TryAcquire(ProjectRoot);
+        if (writerLease is null)
+        {
+            if (!waitForConcurrentSweep)
+            {
+                return FreshnessOutcome.SkippedConcurrentSweep();
+            }
+
+            writerLease = IndexWriterLock.Acquire(ProjectRoot, onPhase);
+        }
+
+        using (writerLease)
+        {
+            // A writer that held the lease when we arrived may have completed the repair while
+            // we waited. Holding the same lease makes this recheck authoritative; don't pay for
+            // a second full-project stat sweep when its completed state is already committed.
+            if (_store.IsIndexComplete())
+            {
+                return FreshnessOutcome.SkippedCompletedConcurrentUpdate();
+            }
+
+            return FreshnessOutcome.Swept(RunIndexOwned(full: false, onScanProgress, onPhase));
+        }
     }
 
     /// <summary>
@@ -1481,6 +1556,14 @@ public sealed class UnBrambleEngine : IDisposable
         {
             Thread.Sleep(ConcurrentSweepPollInterval);
 
+            // Incompleteness can appear after EnsureFresh's initial marker checks. A watcher
+            // holds its lifetime lock even while idle, so switch immediately to the finite writer
+            // lock instead of waiting for a heartbeat that must not vouch for partial state.
+            if (!_store.IsIndexComplete())
+            {
+                return RecoverIncompleteIndex(onScanProgress, onPhase, waitForConcurrentSweep: true);
+            }
+
             var heartbeat = HeartbeatFile.TryRead(ProjectRoot);
             if (heartbeat is { } h && HeartbeatFreshness.IsFresh(h.UtcTimestamp, DateTime.UtcNow, HeartbeatFreshness.DefaultStaleThreshold))
             {
@@ -1494,8 +1577,11 @@ public sealed class UnBrambleEngine : IDisposable
                     return FreshnessOutcome.Swept(RunIndex(full: false, onScanProgress, onPhase));
                 }
 
-                AutoWatchMarkers.TouchLastQuery(ProjectRoot, DateTime.UtcNow);
-                return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - h.UtcTimestamp);
+                if (_store.IsIndexComplete())
+                {
+                    AutoWatchMarkers.TouchLastQuery(ProjectRoot, DateTime.UtcNow);
+                    return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - h.UtcTimestamp);
+                }
             }
 
             var watcherProbe = Freshness.WatcherLock.TryAcquire(ProjectRoot);

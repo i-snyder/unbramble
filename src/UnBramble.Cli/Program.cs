@@ -2580,6 +2580,10 @@ public static class Program
         {
             diag.WriteLine("freshness: concurrent sweep detected elsewhere, not waited on");
         }
+        else if (outcome.ConcurrentUpdateCompleted)
+        {
+            diag.WriteLine("freshness: concurrent index repair completed");
+        }
         else
         {
             var ageSeconds = outcome.HeartbeatAge!.Value.TotalSeconds;

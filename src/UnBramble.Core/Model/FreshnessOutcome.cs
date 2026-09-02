@@ -5,14 +5,27 @@ namespace UnBramble.Core.Model;
 /// to trust (no sweep performed, <see cref="HeartbeatAge"/> set), a stat-sweep just ran (<see
 /// cref="Summary"/> set), or -- <see cref="ConcurrentSweepInProgress"/> only, non-waiting callers
 /// only, see that flag's own doc comment -- another process already owns the write lock and is
-/// mid-sweep, so this call returned immediately without sweeping OR waiting. At most one of
-/// <see cref="HeartbeatAge"/>/<see cref="Summary"/> is non-null, and never both.
+/// mid-sweep, so this call returned immediately without sweeping OR waiting, or <see
+/// cref="ConcurrentUpdateCompleted"/> shows that this caller waited for the writer that repaired
+/// an incomplete index. At most one of <see cref="HeartbeatAge"/>/<see cref="Summary"/> is
+/// non-null, and never both.
 /// </summary>
-public sealed record FreshnessOutcome(bool SweepPerformed, bool ConcurrentSweepInProgress, TimeSpan? HeartbeatAge, IndexSummary? Summary)
+public sealed record FreshnessOutcome(
+    bool SweepPerformed,
+    bool ConcurrentSweepInProgress,
+    TimeSpan? HeartbeatAge,
+    IndexSummary? Summary,
+    bool ConcurrentUpdateCompleted = false)
 {
     public static FreshnessOutcome SkippedFreshHeartbeat(TimeSpan age) => new(false, false, age, null);
 
     public static FreshnessOutcome Swept(IndexSummary summary) => new(true, false, null, summary);
+
+    /// <summary>
+    /// This caller found an incomplete index, waited for the current writer, then observed that
+    /// writer's completed marker while holding the finite writer lock. No duplicate sweep ran.
+    /// </summary>
+    public static FreshnessOutcome SkippedCompletedConcurrentUpdate() => new(false, false, null, null, true);
 
     /// <summary>
     /// Only reachable when <see cref="UnBrambleEngine.EnsureFresh"/> is called with

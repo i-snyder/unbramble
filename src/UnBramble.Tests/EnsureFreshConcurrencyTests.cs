@@ -152,4 +152,91 @@ public class EnsureFreshConcurrencyTests
         Assert.True(outcome.SweepPerformed);
         Assert.NotNull(outcome.Summary);
     }
+
+    [Fact]
+    public async Task EnsureFresh_IndexBecomesIncompleteAfterWaitBegins_RecoversThroughWriterLock()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+
+        using var watcherLock = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcherLock);
+
+        using var waitStarted = new ManualResetEventSlim();
+        var task = Task.Run(() => engine.EnsureFresh(
+            onPhase: phase =>
+            {
+                if (phase.Contains("waiting for it", StringComparison.Ordinal))
+                {
+                    waitStarted.Set();
+                }
+            }));
+
+        Assert.True(waitStarted.Wait(TimeSpan.FromSeconds(5)), "EnsureFresh never entered its concurrent-writer wait.");
+        SetIndexComplete(engine.DbPath, complete: false);
+
+        var outcome = await task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(outcome.SweepPerformed);
+        Assert.Equal("1", ReadIndexComplete(engine.DbPath));
+    }
+
+    [Fact]
+    public async Task EnsureFresh_ConcurrentWriterCompletesRepair_DoesNotRunRedundantSweep()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        SetIndexComplete(engine.DbPath, complete: false);
+
+        var writerLock = IndexWriterLock.TryAcquire(fixture.Root);
+        Assert.NotNull(writerLock);
+        try
+        {
+            using var recoveryStarted = new ManualResetEventSlim();
+            var scanProgressCalls = 0;
+            var task = Task.Run(() => engine.EnsureFresh(
+                onScanProgress: _ => Interlocked.Increment(ref scanProgressCalls),
+                onPhase: phase =>
+                {
+                    if (phase.Contains("previous index did not complete", StringComparison.Ordinal))
+                    {
+                        recoveryStarted.Set();
+                    }
+                }));
+
+            Assert.True(recoveryStarted.Wait(TimeSpan.FromSeconds(5)), "EnsureFresh never entered incomplete-index recovery.");
+            SetIndexComplete(engine.DbPath, complete: true);
+            writerLock.Dispose();
+            writerLock = null;
+
+            var outcome = await task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(outcome.SweepPerformed);
+            Assert.True(outcome.ConcurrentUpdateCompleted);
+            Assert.Equal(0, scanProgressCalls);
+        }
+        finally
+        {
+            writerLock?.Dispose();
+        }
+    }
+
+    private static void SetIndexComplete(string dbPath, bool complete)
+    {
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE meta_kv SET value = @value WHERE key = 'index_complete';";
+        command.Parameters.AddWithValue("@value", complete ? "1" : "0");
+        Assert.Equal(1, command.ExecuteNonQuery());
+    }
+
+    private static string? ReadIndexComplete(string dbPath)
+    {
+        using var connection = new SqliteConnection($"Data Source={dbPath}");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT value FROM meta_kv WHERE key = 'index_complete';";
+        return command.ExecuteScalar() as string;
+    }
 }
