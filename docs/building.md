@@ -27,4 +27,12 @@ For a release-style publish and smoke test, run:
 
 `publish/` will contain the files used to assemble the release package. For a quick development build, run `dotnet build`.
 
+For a local NativeAOT build that can be sampled with Windows Performance Recorder or inspected in a native debugger, run:
+
+```powershell
+./scripts/verify-all.ps1 -LocalDiagnostics
+```
+
+This keeps the matching PDB in `publish/` and embeds its local path in the executable. Don't distribute that build; rerun the wrapper without `-LocalDiagnostics` before packaging a release.
+
 Read [architecture.md](architecture.md) before changing core behavior. Maintainers should follow [releasing.md](releasing.md).

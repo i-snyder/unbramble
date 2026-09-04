@@ -1,9 +1,13 @@
 #Requires -Version 7
 [CmdletBinding()]
 param(
-    [switch]$SkipPublish
+    [switch]$SkipPublish,
+    [switch]$LocalDiagnostics
 )
 $ErrorActionPreference = 'Stop'
+if ($SkipPublish -and $LocalDiagnostics) {
+    throw '-LocalDiagnostics requires a publish; don''t combine it with -SkipPublish.'
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $script:failed = @()
 
@@ -103,27 +107,43 @@ if (-not $SkipPublish) {
         }
         Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction SilentlyContinue
 
-        # Try NativeAOT first (the preferred path). Fall back to a
+        # Try NativeAOT first (the preferred path). Local diagnostics keep the native PDB and
+        # its matching PE debug record; ordinary verification stays release-identical and
+        # strips both. Fall back to a
         # self-contained single-file publish if the local machine is missing native
         # publish tooling (e.g. the VS C++ workload).
-        & $script:dotnetExe publish "$repo/src/UnBramble.Cli/UnBramble.Cli.csproj" -c Release -r win-x64 -p:DebugSymbols=false -p:DebugType=None -o "$repo/publish"
+        $debugSymbols = if ($LocalDiagnostics) { 'true' } else { 'false' }
+        $debugType = if ($LocalDiagnostics) { 'full' } else { 'None' }
+        & $script:dotnetExe publish "$repo/src/UnBramble.Cli/UnBramble.Cli.csproj" -c Release -r win-x64 "-p:DebugSymbols=$debugSymbols" "-p:DebugType=$debugType" -o "$repo/publish"
         if ($LASTEXITCODE -ne 0) {
+            if ($LocalDiagnostics) {
+                throw 'The local diagnostic NativeAOT publish failed. Install or repair the native toolchain; a managed fallback cannot reproduce NativeAOT-only failures.'
+            }
             Write-Host "-- NativeAOT publish failed locally (likely missing native toolchain); falling back to self-contained single-file publish --" -ForegroundColor Yellow
             Remove-Item -Recurse -Force "$repo/publish" -ErrorAction SilentlyContinue
-            & $script:dotnetExe publish "$repo/src/UnBramble.Cli/UnBramble.Cli.csproj" -c Release -r win-x64 --self-contained true -p:PublishAot=false -p:PublishSingleFile=true -p:DebugSymbols=false -p:DebugType=None -o "$repo/publish"
+            & $script:dotnetExe publish "$repo/src/UnBramble.Cli/UnBramble.Cli.csproj" -c Release -r win-x64 --self-contained true -p:PublishAot=false -p:PublishSingleFile=true "-p:DebugSymbols=$debugSymbols" "-p:DebugType=$debugType" -o "$repo/publish"
         }
 
         if ($LASTEXITCODE -ne 0) { return }
 
-        # NativeAOT emits a separate PDB even with DebugType=None. Keep symbols out of the public
-        # binary folder: they are very large and contain absolute build-machine paths. DebugType=None
-        # also keeps that path out of the PE debug directory in unbramble.exe itself.
-        Get-ChildItem -LiteralPath (Join-Path $repo 'publish') -Filter '*.pdb' -File |
-            Remove-Item -Force
-        $publishedExeText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($publishExe))
-        foreach ($privatePath in @($repo, $env:USERPROFILE)) {
-            if ($privatePath -and $publishedExeText.Contains($privatePath, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Published executable contains a private build path: $privatePath"
+        if ($LocalDiagnostics) {
+            $nativePdb = Join-Path $repo 'publish/unbramble.pdb'
+            if (-not (Test-Path -LiteralPath $nativePdb -PathType Leaf)) {
+                throw "The local diagnostic NativeAOT publish did not produce its matching PDB: $nativePdb"
+            }
+            Write-Host '-- Local diagnostic publish: symbols retained; do not distribute this build --' -ForegroundColor Yellow
+        }
+        else {
+            # Keep symbols out of the public binary folder: they are very large and contain
+            # absolute build-machine paths. DebugType=None also keeps that path out of the PE
+            # debug directory in unbramble.exe itself.
+            Get-ChildItem -LiteralPath (Join-Path $repo 'publish') -Filter '*.pdb' -File |
+                Remove-Item -Force
+            $publishedExeText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($publishExe))
+            foreach ($privatePath in @($repo, $env:USERPROFILE)) {
+                if ($privatePath -and $publishedExeText.Contains($privatePath, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Published executable contains a private build path: $privatePath"
+                }
             }
         }
 

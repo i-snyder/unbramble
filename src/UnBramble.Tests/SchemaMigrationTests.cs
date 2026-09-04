@@ -18,6 +18,43 @@ namespace UnBramble.Tests;
 /// </summary>
 public class SchemaMigrationTests
 {
+    [Fact]
+    public void CurrentSchema_MissingRequiredAccessPath_RepairsInPlaceWithoutReindex()
+    {
+        using var fixture = FixtureCopy.Create();
+        var dbPath = UnBramblePaths.RelativeTo(fixture.Root, UnBramblePaths.DbRelativePath);
+
+        using (var store = UnBrambleStore.OpenOrCreate(dbPath, "2022.3.30f1"))
+        {
+            Assert.True(store.WasCreated);
+        }
+
+        using (var conn = new SqliteConnection($"Data Source={dbPath}"))
+        {
+            conn.Open();
+            Exec(conn, "INSERT INTO files(path, kind, mtime, size) VALUES ('Assets/Keep.asset', 'asset', 1, 1);");
+            Exec(conn, "DROP INDEX idx_assemblies_asmdef_file;");
+            Exec(conn, "DROP INDEX idx_symbols_assembly;");
+            Exec(conn, "DROP INDEX idx_symbol_refs_source_symbol;");
+            // A matching name on the wrong column must be replaced, not mistaken for the access
+            // path that prevents the cascade scan.
+            Exec(conn, "CREATE INDEX idx_symbol_refs_source_symbol ON symbol_refs(target_doc_id);");
+        }
+
+        using var repaired = UnBrambleStore.OpenOrCreate(dbPath, "2022.3.30f1");
+        Assert.False(repaired.SchemaWasReset);
+        Assert.False(repaired.WasCreated);
+
+        using var verify = new SqliteConnection($"Data Source={dbPath}");
+        verify.Open();
+        using var command = verify.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM files WHERE path = 'Assets/Keep.asset';";
+        Assert.Equal(1L, (long)command.ExecuteScalar()!);
+        AssertIndexLeadingColumn(verify, "idx_assemblies_asmdef_file", "assemblies", "asmdef_file_id");
+        AssertIndexLeadingColumn(verify, "idx_symbols_assembly", "symbols", "assembly_id");
+        AssertIndexLeadingColumn(verify, "idx_symbol_refs_source_symbol", "symbol_refs", "source_symbol_id");
+    }
+
     [Theory]
     [InlineData("store_instance_id")]
     [InlineData("index_complete")]
@@ -173,5 +210,20 @@ public class SchemaMigrationTests
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         cmd.ExecuteNonQuery();
+    }
+
+    private static void AssertIndexLeadingColumn(SqliteConnection conn, string indexName, string tableName, string columnName)
+    {
+        using var table = conn.CreateCommand();
+        table.CommandText = "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = @name;";
+        table.Parameters.AddWithValue("@name", indexName);
+        Assert.Equal(tableName, table.ExecuteScalar()?.ToString());
+
+        using var column = conn.CreateCommand();
+        column.CommandText = $"PRAGMA index_info('{indexName}');";
+        using var reader = column.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(0L, reader.GetInt64(0));
+        Assert.Equal(columnName, reader.GetString(2));
     }
 }

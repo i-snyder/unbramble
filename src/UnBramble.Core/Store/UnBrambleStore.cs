@@ -63,6 +63,17 @@ public sealed class UnBrambleStore : IDisposable
 
     private const string BuiltinGuidE = "0000000000000000e000000000000000";
     private const string BuiltinGuidF = "0000000000000000f000000000000000";
+    private sealed record RequiredAccessPath(string IndexName, string TableName, string LeadingColumn, string CreateSql);
+
+    private static readonly RequiredAccessPath[] RequiredAccessPaths =
+    [
+        new("idx_assemblies_asmdef_file", "assemblies", "asmdef_file_id",
+            "CREATE INDEX IF NOT EXISTS idx_assemblies_asmdef_file ON assemblies(asmdef_file_id);"),
+        new("idx_symbols_assembly", "symbols", "assembly_id",
+            "CREATE INDEX IF NOT EXISTS idx_symbols_assembly ON symbols(assembly_id);"),
+        new("idx_symbol_refs_source_symbol", "symbol_refs", "source_symbol_id",
+            "CREATE INDEX IF NOT EXISTS idx_symbol_refs_source_symbol ON symbol_refs(source_symbol_id);")
+    ];
 
     private readonly SqliteConnection _connection;
     private string? _storeInstanceId;
@@ -125,7 +136,8 @@ public sealed class UnBrambleStore : IDisposable
         // defeating WAL and making even `stats` fail while another process indexed. A matching
         // schema stamp is the contract that all current objects already exist.
         if (string.Equals(journalMode, "wal", StringComparison.OrdinalIgnoreCase)
-            && store.TryLoadCurrentStoreIdentity(currentVersionText, out var steadyStateStoreId))
+            && store.TryLoadCurrentStoreIdentity(currentVersionText, out var steadyStateStoreId)
+            && HasRequiredAccessPaths(connection))
         {
             store._storeInstanceId = steadyStateStoreId;
             ExecuteNonQuery(connection, "PRAGMA synchronous=NORMAL;");
@@ -153,6 +165,7 @@ public sealed class UnBrambleStore : IDisposable
         else
         {
             store._storeInstanceId = currentStoreId;
+            EnsureRequiredAccessPaths(connection);
         }
         return store;
     }
@@ -206,6 +219,58 @@ public sealed class UnBrambleStore : IDisposable
         using var command = connection.CreateCommand();
         command.CommandText = sql;
         return command.ExecuteScalar()?.ToString();
+    }
+
+    /// <summary>
+    /// Access paths can be added without changing stored graph data or the schema contract. Keep
+    /// them out of the version-mismatch rebuild path: a current database from an older v11 binary
+    /// should gain the missing index in place, not pay for a full reindex. The read-only fast path
+    /// checks first; only a missing access path falls through to the writer-serialized repair.
+    /// </summary>
+    private static bool HasRequiredAccessPaths(SqliteConnection connection) =>
+        RequiredAccessPaths.All(accessPath => HasRequiredAccessPath(connection, accessPath));
+
+    private static bool HasRequiredAccessPath(SqliteConnection connection, RequiredAccessPath accessPath)
+    {
+        using var tableCommand = connection.CreateCommand();
+        tableCommand.CommandText = "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = @name;";
+        tableCommand.Parameters.AddWithValue("@name", accessPath.IndexName);
+        if (!string.Equals(tableCommand.ExecuteScalar()?.ToString(), accessPath.TableName, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // RequiredAccessPaths contains only source-controlled SQLite identifiers. The leading
+        // column is what makes the child-key lookup usable; trailing columns wouldn't hurt it.
+        using var columnCommand = connection.CreateCommand();
+        columnCommand.CommandText = $"PRAGMA index_info('{accessPath.IndexName}');";
+        using var reader = columnCommand.ExecuteReader();
+        return reader.Read()
+            && reader.GetInt64(0) == 0
+            && !reader.IsDBNull(2)
+            && string.Equals(reader.GetString(2), accessPath.LeadingColumn, StringComparison.Ordinal);
+    }
+
+    private static void EnsureRequiredAccessPaths(SqliteConnection connection)
+    {
+        var repairs = RequiredAccessPaths
+            .Where(accessPath => !HasRequiredAccessPath(connection, accessPath))
+            .ToArray();
+        if (repairs.Length == 0)
+        {
+            return;
+        }
+
+        using var transaction = connection.BeginTransaction();
+        foreach (var accessPath in repairs)
+        {
+            // A development build or manual repair may have reused the reserved name for the
+            // wrong table/column. IF NOT EXISTS can't correct that shape, so replace it while the
+            // caller owns the writer lease.
+            ExecuteNonQuery(connection, $"DROP INDEX IF EXISTS {accessPath.IndexName};", transaction);
+            ExecuteNonQuery(connection, accessPath.CreateSql, transaction);
+        }
+        transaction.Commit();
     }
 
     private void EnsureSchema(string unityVersion)
@@ -424,6 +489,11 @@ public sealed class UnBrambleStore : IDisposable
             """);
         ExecuteNonQuery(_connection, "CREATE INDEX IF NOT EXISTS idx_symbol_refs_target ON symbol_refs(target_doc_id);");
         ExecuteNonQuery(_connection, "CREATE INDEX IF NOT EXISTS idx_symbol_refs_source ON symbol_refs(source_file_id);");
+        // Index every foreign-key child key used by a delete action. In particular, without the
+        // symbol_refs child index, deleting each old symbol during an incremental assembly rebuild
+        // makes SQLite scan the entire reference table to enforce the FK. A 1.1M-row table turned
+        // one rebuild into an effectively unbounded, single-core read loop.
+        EnsureRequiredAccessPaths(_connection);
 
         // NOT a third edge store: no target column exists, and this table is never joined into
         // any closure/who-uses result as an edge. Purely negative evidence (by-name dispatch
