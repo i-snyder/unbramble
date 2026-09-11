@@ -132,6 +132,7 @@ public class HomeCommandTests
         Assert.True(File.Exists(DbPath(fixture.Root)), "accept-accept must create the DB");
         Assert.Contains("Unbrambled! You're ready to grow.  ---<-@", stdOut, StringComparison.Ordinal);
         Assert.Contains("files indexed in", stdOut, StringComparison.Ordinal);
+        Assert.Contains("Reference questions: start with unbramble who-uses", stdOut, StringComparison.Ordinal);
         Assert.DoesNotContain("\x1b[", stdOut, StringComparison.Ordinal);
     }
 
@@ -210,7 +211,28 @@ public class HomeCommandTests
         Assert.Equal(0, exitCode);
         Assert.Contains("files,", stdOut, StringComparison.Ordinal);
         Assert.Contains("links tracked", stdOut, StringComparison.Ordinal);
+        Assert.Contains("Reference questions: start with unbramble who-uses", stdOut, StringComparison.Ordinal);
+        Assert.DoesNotContain("Agent guidance is out of date", stdOut, StringComparison.Ordinal);
         Assert.DoesNotContain("\x1b[", stdOut, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Inited_OldManagedGuidance_ReportsRefreshWithoutEditingAgentsMd()
+    {
+        using var fixture = FixtureCopy.Create();
+        File.WriteAllText(Path.Combine(fixture.Root, "unbramble.json"), """{"watch":{"autoStart":false}}""");
+        _ = CliRunner.Run("init", "-p", fixture.Root);
+
+        var agentsPath = Path.Combine(fixture.Root, "AGENTS.md");
+        var oldGuidance = File.ReadAllText(agentsPath).Replace(" guidance-v1", "", StringComparison.Ordinal);
+        File.WriteAllText(agentsPath, oldGuidance);
+
+        var (exitCode, stdOut, _) = RunHome(["-p", fixture.Root], isInteractive: false, supportsAnsi: false, Answers());
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Agent guidance is out of date", stdOut, StringComparison.Ordinal);
+        Assert.Contains("unbramble init", stdOut, StringComparison.Ordinal);
+        Assert.Equal(oldGuidance, File.ReadAllText(agentsPath));
     }
 
     [Fact]

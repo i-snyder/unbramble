@@ -231,7 +231,7 @@ public static class HomeCommand
         Console.WriteLine("  " + AnsiStyle.Muted($"{FormatExactCount(totalFiles)} files indexed in {FormatElapsed(summary.Elapsed)}.", ansi));
         Console.WriteLine("  " + AnsiStyle.Muted("A background watcher will keep the index fresh from here on.", ansi));
         Console.WriteLine();
-        Console.WriteLine("  " + TryLine(ansi, "unbramble who-uses <file-or-type>", "unbramble --help"));
+        Console.WriteLine("  " + ReferenceLine(ansi, "unbramble who-uses <file-or-type>", "unbramble --help"));
 
         // Same watcher this project would auto-spawn from its first real query anyway (see
         // Program.MaybeAutoSpawnWatch) -- doing it right here instead just means the FIRST query
@@ -301,18 +301,37 @@ public static class HomeCommand
         // reader to ignore the color that does mean something.
         Console.WriteLine("  " + (isFresh ? AnsiStyle.Alive(freshnessLine, env.SupportsAnsi) : AnsiStyle.Notice(freshnessLine, env.SupportsAnsi)));
         Console.WriteLine($"  ~{FormatCompactCount(totalFiles)} files, ~{FormatCompactCount(totalLinks)} links tracked (Unity {engine.UnityVersion}).");
+        if (AgentInstructionsSetup.ManagedGuidanceNeedsRefresh(projectRoot))
+        {
+            Console.WriteLine("  " + AnsiStyle.Notice(
+                "Agent guidance is out of date — run unbramble init to refresh the managed AGENTS.md block.",
+                env.SupportsAnsi));
+        }
         Console.WriteLine();
-        Console.WriteLine("  " + TryLine(env.SupportsAnsi, "unbramble who-uses <file-or-type>", "unbramble stats", "unbramble --help"));
+        Console.WriteLine("  " + ReferenceLine(
+            env.SupportsAnsi,
+            "unbramble who-uses <file-or-type>",
+            "unbramble stats",
+            "unbramble --help"));
 
         return 0;
     }
 
-    /// <summary>The "here's what to type next" line, shared by Case D (just finished setup) and
-    /// Case E (already set up) so the two never drift apart. The commands are the only part worth
-    /// looking at, so the label around them is the part that recedes.</summary>
-    private static string TryLine(bool ansi, params string[] commands) =>
-        AnsiStyle.Muted("Try:  ", ansi) +
-        string.Join("    ", commands.Select(c => AnsiStyle.Command(c, ansi)));
+    /// <summary>The relationship-discovery policy reminder shared by Case D (just finished
+    /// setup) and Case E (already set up) so the two never drift apart. Additional commands stay
+    /// available after a quieter "More" label without weakening the primary instruction.</summary>
+    private static string ReferenceLine(bool ansi, string primaryCommand, params string[] additionalCommands)
+    {
+        var line = AnsiStyle.Muted("Reference questions: start with ", ansi) +
+            AnsiStyle.Command(primaryCommand, ansi);
+        if (additionalCommands.Length > 0)
+        {
+            line += AnsiStyle.Muted("    More: ", ansi) +
+                string.Join("    ", additionalCommands.Select(c => AnsiStyle.Command(c, ansi)));
+        }
+
+        return line;
+    }
 
     private static string FormatExactCount(int value) => value.ToString("N0", CultureInfo.InvariantCulture);
 

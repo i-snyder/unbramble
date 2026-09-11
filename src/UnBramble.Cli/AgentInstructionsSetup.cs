@@ -21,6 +21,11 @@ internal static class AgentInstructionsSetup
 
     private const string EndMarker = "<!-- unbramble:end -->";
 
+    // Independent of the executable version: bump only when the managed instructions change in
+    // a way existing projects should be prompted to pick up. The home command compares this token
+    // read-only and points at `init`; it never edits AGENTS.md outside that deliberate setup verb.
+    private const string GuidanceMarkerToken = "guidance-v1";
+
     // Claude Code's @path import parser treats '.' as a valid path character (so imports like
     // @package.json work), which means punctuation glued directly onto "@AGENTS.md" -- e.g. a
     // trailing sentence period -- gets captured into the filename and silently fails to resolve.
@@ -36,6 +41,8 @@ internal static class AgentInstructionsSetup
         ## unbramble
 
         `unbramble` is installed in this project and indexes it: GUID/asset references (prefabs, scenes, materials, shaders, Addressables, ...) plus real C# semantic analysis (Roslyn). Queries typically return in under a second once indexed.
+
+        `unbramble` is the default tool for relationship discovery in this Unity project. Start with it whenever the task asks what uses, calls, subscribes to, references, depends on, is wired to, or could be affected by a C# symbol or asset. Don't use `rg`, IDE search, or manual scanning to enumerate callers, subscribers, UnityEvents, asset references, or blast radius. Text search is appropriate only for locating an unknown target name or unindexed literal content; once you have a target, switch to `unbramble who-uses`, `uses`, or `resolve`. Read the files returned by UnBramble to understand their implementation.
 
         Never grep for GUIDs or text-search `.prefab`/`.unity`/`.asset`/`.asmdef`/`.meta` files -- text search silently misses references and gives false confidence in blast-radius answers. If you catch yourself extracting a GUID from a `.meta` file to search for it, stop: that is exactly what `unbramble who-uses <path-or-guid>` answers, completely, across the whole indexed project. Use `who-uses` / `uses` / `resolve` / `cs-refs` for "what references this" / "what breaks if I delete or rename this" / "who uses this GUID" -- before reaching for grep, not after. `stats` and `dead-candidates` cover project-wide overviews. Run `unbramble --help` or `unbramble <verb> --help` for usage; add `--json` for machine-readable output. The never-grep rule covers Unity-serialized files only: plain JSON config such as `Packages/manifest.json` or a package's `package.json` holds literal strings, not GUID references, and isn't indexed -- grep is the right tool there.
 
@@ -186,12 +193,38 @@ internal static class AgentInstructionsSetup
     {
         var lines = new List<string>
         {
-            $"{BeginMarkerPrefix} v{version} -->",
+            $"{BeginMarkerPrefix} v{version} {GuidanceMarkerToken} -->",
             "<!-- Managed by `unbramble init`. Edits between these markers are overwritten when init reruns; put your own notes outside them. -->",
         };
         lines.AddRange(SplitLines(BodyTemplate));
         lines.Add(EndMarker);
         return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>Whether an existing UnBramble-managed AGENTS.md block predates the current
+    /// guidance revision. Missing/unmanaged files are not reported: they may be an intentional
+    /// `init --no-agents` choice. This is a read-only status check used by the home command.</summary>
+    public static bool ManagedGuidanceNeedsRefresh(string projectRoot)
+    {
+        var agentsPath = Path.Combine(projectRoot, "AGENTS.md");
+        if (!File.Exists(agentsPath))
+        {
+            return false;
+        }
+
+        foreach (var line in File.ReadLines(agentsPath))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith(BeginMarkerPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return !trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Contains(GuidanceMarkerToken, StringComparer.Ordinal);
+        }
+
+        return false;
     }
 
     /// <summary>Splices <paramref name="newBlock"/> into <paramref name="filePath"/> between

@@ -18,7 +18,7 @@ Open a new terminal at the root of a Unity project and run `unbramble`.
 
 ## Update
 
-To update, run `unbramble stop`, then replace every file in the installation folder with the new release.
+To update, run `unbramble stop`, then replace every file in the installation folder with the new release. Run `unbramble` in each indexed project afterward; if it reports that the managed agent guidance is out of date, run `unbramble init` there to refresh that block. The refresh preserves other `AGENTS.md` content and the existing index makes the scan incremental.
 
 ## Uninstall
 

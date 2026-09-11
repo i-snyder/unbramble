@@ -25,6 +25,12 @@ public class AgentInstructionsTests
         Assert.Contains("<!-- unbramble:begin", agentsText);
         Assert.Contains("<!-- unbramble:end -->", agentsText);
         Assert.Contains("## unbramble", agentsText);
+        Assert.Contains("guidance-v1", agentsText);
+        Assert.Contains("default tool for relationship discovery", agentsText);
+        Assert.Contains("what uses, calls, subscribes to, references, depends on, is wired to", agentsText);
+        Assert.Contains("Don't use `rg`, IDE search, or manual scanning to enumerate callers", agentsText);
+        Assert.Contains("once you have a target, switch to `unbramble who-uses`, `uses`, or `resolve`", agentsText);
+        Assert.Contains("Read the files returned by UnBramble", agentsText);
         Assert.Contains("audit-assets", agentsText);
         Assert.Contains("--fail-if-found", agentsText);
         Assert.Contains("--build-reachable-only", agentsText);
