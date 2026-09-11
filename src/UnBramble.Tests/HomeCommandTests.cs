@@ -227,11 +227,19 @@ public class HomeCommandTests
         var oldGuidance = File.ReadAllText(agentsPath).Replace(" guidance-v1", "", StringComparison.Ordinal);
         File.WriteAllText(agentsPath, oldGuidance);
 
-        var (exitCode, stdOut, _) = RunHome(["-p", fixture.Root], isInteractive: false, supportsAnsi: false, Answers());
+        var (exitCode, stdOut, _) = RunHome(["-p", fixture.Root], isInteractive: false, supportsAnsi: true, Answers());
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Agent guidance is out of date", stdOut, StringComparison.Ordinal);
         Assert.Contains("unbramble init", stdOut, StringComparison.Ordinal);
+        Assert.True(
+            stdOut.Contains("\x1b[1;38;5;214mAgent guidance is out of date", StringComparison.Ordinal) ||
+            stdOut.Contains("\x1b[1;38;2;222;158;58mAgent guidance is out of date", StringComparison.Ordinal),
+            "the stale-guidance line should use the bold amber Caution role in either supported ANSI mode");
+        Assert.True(
+            stdOut.IndexOf("Agent guidance is out of date", StringComparison.Ordinal) <
+            stdOut.IndexOf("No watcher running", StringComparison.Ordinal),
+            "stale agent guidance should appear before routine watcher and index status");
         Assert.Equal(oldGuidance, File.ReadAllText(agentsPath));
     }
 

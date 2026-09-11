@@ -296,17 +296,18 @@ public static class HomeCommand
 
         Console.WriteLine("  " + AnsiStyle.Muted($"unbramble — {engine.ProjectRoot}", env.SupportsAnsi));
         Console.WriteLine();
+        if (AgentInstructionsSetup.ManagedGuidanceNeedsRefresh(projectRoot))
+        {
+            Console.WriteLine("  " + AnsiStyle.Caution(
+                "Agent guidance is out of date — run unbramble init to refresh the managed AGENTS.md block.",
+                env.SupportsAnsi));
+            Console.WriteLine();
+        }
         // Notice, not Caution, for the not-fresh branches: "no watcher running -- queries refresh
         // on demand" is a normal, working state, and painting it like a warning would train the
         // reader to ignore the color that does mean something.
         Console.WriteLine("  " + (isFresh ? AnsiStyle.Alive(freshnessLine, env.SupportsAnsi) : AnsiStyle.Notice(freshnessLine, env.SupportsAnsi)));
         Console.WriteLine($"  ~{FormatCompactCount(totalFiles)} files, ~{FormatCompactCount(totalLinks)} links tracked (Unity {engine.UnityVersion}).");
-        if (AgentInstructionsSetup.ManagedGuidanceNeedsRefresh(projectRoot))
-        {
-            Console.WriteLine("  " + AnsiStyle.Notice(
-                "Agent guidance is out of date — run unbramble init to refresh the managed AGENTS.md block.",
-                env.SupportsAnsi));
-        }
         Console.WriteLine();
         Console.WriteLine("  " + ReferenceLine(
             env.SupportsAnsi,
