@@ -16,7 +16,7 @@ public class InitIgnoreFilesTests
     public void Init_GitMarkerPresent_CreatesGitignoreWithStateDirEntry()
     {
         using var fixture = FixtureCopy.Create();
-        Directory.CreateDirectory(Path.Combine(fixture.Root, ".git"));
+        CreateGitMarker(fixture.Root);
 
         var (exitCode, stdOut, _) = CliRunner.Run("init", "-p", fixture.Root);
 
@@ -31,7 +31,7 @@ public class InitIgnoreFilesTests
     public void Init_GitMarkerPresent_AppendsToExistingGitignoreWithoutDuplicating()
     {
         using var fixture = FixtureCopy.Create();
-        Directory.CreateDirectory(Path.Combine(fixture.Root, ".git"));
+        CreateGitMarker(fixture.Root);
         var gitignorePath = Path.Combine(fixture.Root, ".gitignore");
         File.WriteAllText(gitignorePath, "bin/" + Environment.NewLine + "obj/" + Environment.NewLine);
 
@@ -48,7 +48,7 @@ public class InitIgnoreFilesTests
     public void Init_PlasticMarkerPresent_CreatesIgnoreConfWithStateDirEntry()
     {
         using var fixture = FixtureCopy.Create();
-        Directory.CreateDirectory(Path.Combine(fixture.Root, ".plastic"));
+        CreatePlasticMarker(fixture.Root);
 
         var (exitCode, stdOut, _) = CliRunner.Run("init", "-p", fixture.Root);
 
@@ -63,7 +63,7 @@ public class InitIgnoreFilesTests
     public void Init_PlasticMarkerPresent_IdempotentOnSecondRun()
     {
         using var fixture = FixtureCopy.Create();
-        Directory.CreateDirectory(Path.Combine(fixture.Root, ".plastic"));
+        CreatePlasticMarker(fixture.Root);
 
         _ = CliRunner.Run("init", "-p", fixture.Root);
         _ = CliRunner.Run("init", "-p", fixture.Root);
@@ -71,6 +71,77 @@ public class InitIgnoreFilesTests
         var ignoreConfPath = Path.Combine(fixture.Root, "ignore.conf");
         var lines = File.ReadAllLines(ignoreConfPath);
         Assert.Equal(1, lines.Count(l => l.Trim() == UnBramblePaths.StateDirName));
+    }
+
+    [Fact]
+    public void Init_EmptyGitDirectoryAndValidPlasticMarker_UsesPlasticOnly()
+    {
+        using var fixture = FixtureCopy.Create();
+        Directory.CreateDirectory(Path.Combine(fixture.Root, ".git"));
+        CreatePlasticMarker(fixture.Root);
+
+        var (exitCode, stdOut, _) = CliRunner.Run("init", "-p", fixture.Root);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Plastic SCM detected", stdOut, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(fixture.Root, "ignore.conf")));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, ".gitignore")));
+    }
+
+    [Fact]
+    public void Init_BothValidMarkersNonInteractive_SkipsRootIgnoreFilesAndExplainsChoice()
+    {
+        using var fixture = FixtureCopy.Create();
+        CreateGitMarker(fixture.Root);
+        CreatePlasticMarker(fixture.Root);
+
+        var (exitCode, stdOut, _) = CliRunner.Run("init", "-p", fixture.Root);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("both Git and Plastic SCM", stdOut, StringComparison.Ordinal);
+        Assert.Contains("--vcs plastic", stdOut, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(fixture.Root, ".gitignore")));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "ignore.conf")));
+    }
+
+    [Fact]
+    public void Init_BothValidMarkersWithPlasticOverride_UsesPlasticOnly()
+    {
+        using var fixture = FixtureCopy.Create();
+        CreateGitMarker(fixture.Root);
+        CreatePlasticMarker(fixture.Root);
+
+        var (exitCode, stdOut, _) = CliRunner.Run("init", "-p", fixture.Root, "--vcs", "plastic");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Plastic SCM selected", stdOut, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(fixture.Root, "ignore.conf")));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, ".gitignore")));
+    }
+
+    [Fact]
+    public void Init_GitdirFileMarker_UsesGitIgnore()
+    {
+        using var fixture = FixtureCopy.Create();
+        File.WriteAllText(Path.Combine(fixture.Root, ".git"), "gitdir: ../metadata/worktree" + Environment.NewLine);
+
+        var (exitCode, stdOut, _) = CliRunner.Run("init", "-p", fixture.Root);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Git detected", stdOut, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(fixture.Root, ".gitignore")));
+    }
+
+    [Fact]
+    public void Init_InvalidVcsOverride_FailsBeforeCreatingProjectState()
+    {
+        using var fixture = FixtureCopy.Create();
+
+        var (exitCode, _, stdErr) = CliRunner.Run("init", "-p", fixture.Root, "--vcs", "svn");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("must be git, plastic, both, or none", stdErr, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(UnBramblePaths.StateDirFor(fixture.Root)));
     }
 
     [Fact]
@@ -109,5 +180,19 @@ public class InitIgnoreFilesTests
         Assert.True(Directory.Exists(Path.Combine(fixture.Root, UnBramblePaths.StateDirName)));
         Assert.True(File.Exists(UnBramblePaths.RelativeTo(fixture.Root, UnBramblePaths.DbRelativePath)));
         Assert.False(Directory.Exists(Path.Combine(fixture.Root, "Library", "UnBramble")));
+    }
+
+    private static void CreateGitMarker(string root)
+    {
+        var marker = Path.Combine(root, ".git");
+        Directory.CreateDirectory(marker);
+        File.WriteAllText(Path.Combine(marker, "HEAD"), "ref: refs/heads/main" + Environment.NewLine);
+    }
+
+    private static void CreatePlasticMarker(string root)
+    {
+        var marker = Path.Combine(root, ".plastic");
+        Directory.CreateDirectory(marker);
+        File.WriteAllText(Path.Combine(marker, "plastic.workspace"), "fixture" + Environment.NewLine);
     }
 }

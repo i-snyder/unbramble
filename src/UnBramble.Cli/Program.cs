@@ -368,9 +368,13 @@ public static class Program
 
     private static int RunInit(string[] rest)
     {
-        var reader = ArgReader.Parse(rest, "--json", "--verbose", "--no-agents", "--no-defender", "--defender");
+        var reader = ArgReader.Parse(
+            rest,
+            ["--json", "--verbose", "--no-agents", "--no-defender", "--defender"],
+            ["--vcs"]);
         var json = reader.HasFlag("--json");
         var verbose = reader.HasFlag("--verbose");
+        var vcsChoice = ParseVcsChoice(reader.GetValue("--vcs"));
 
         // --json/agent runs never prompt (design invariant, same as every other interactive step
         // in this codebase): ConsoleCapabilities.IsInteractive already requires both stdin and
@@ -384,7 +388,8 @@ public static class Program
         // renderer/prompt interleaving bug this ordering prevents.
         ExecuteInitPreScan(
             engine, announce: !json, setUpAgents: !reader.HasFlag("--no-agents"),
-            interactive, forceDefenderPrompt: reader.HasFlag("--defender"), skipDefender: reader.HasFlag("--no-defender"));
+            interactive, forceDefenderPrompt: reader.HasFlag("--defender"), skipDefender: reader.HasFlag("--no-defender"),
+            vcsChoice: vcsChoice, readLine: Console.ReadLine);
         var summary = RunIndexWithProgress(engine, full: false, json);
 
         PrintWarnings(summary.Warnings);
@@ -479,10 +484,11 @@ public static class Program
     /// </summary>
     internal static void ExecuteInitPreScan(
         UnBrambleEngine engine, bool announce, bool setUpAgents,
-        bool interactive, bool forceDefenderPrompt = false, bool skipDefender = false)
+        bool interactive, bool forceDefenderPrompt = false, bool skipDefender = false,
+        string? vcsChoice = null, Func<string?>? readLine = null)
     {
         var setupCapture = ProjectInstallation.CaptureSetup(engine.ProjectRoot, setUpAgents);
-        SetUpIgnoreFiles(engine.ProjectRoot, json: !announce);
+        SetUpIgnoreFiles(engine.ProjectRoot, json: !announce, interactive, vcsChoice, readLine ?? Console.ReadLine);
         if (setUpAgents)
         {
             AgentInstructionsSetup.SetUp(engine.ProjectRoot, Version, line => { if (announce) WriteSetupLine(line); });
@@ -522,10 +528,16 @@ public static class Program
     /// the state directory itself -- the same trick git/npm use for their own cache dirs, belt
     /// and suspenders even if step (2) below is somehow skipped or fails; (2) an entry appended
     /// to the detected VCS's own root-level ignore file -- `.gitignore` for git, `ignore.conf`
-    /// for Plastic SCM (detected via `.git`/`.plastic` markers at the project root) -- or, if
-    /// neither is detected, a one-line manual-setup notice instead of guessing.
+    /// for Plastic SCM. Markers must contain recognizable workspace metadata, not merely exist.
+    /// If both are valid, an interactive caller chooses; a non-interactive caller must use
+    /// `--vcs git|plastic|both|none`, otherwise no root ignore file is changed.
     /// </summary>
-    private static void SetUpIgnoreFiles(string projectRoot, bool json)
+    private static void SetUpIgnoreFiles(
+        string projectRoot,
+        bool json,
+        bool interactive,
+        string? requestedVcs,
+        Func<string?> readLine)
     {
         var stateDir = UnBramblePaths.StateDirFor(projectRoot);
         Directory.CreateDirectory(stateDir);
@@ -542,23 +554,126 @@ public static class Program
 
         var gitMarker = Path.Combine(projectRoot, ".git");
         var plasticMarker = Path.Combine(projectRoot, ".plastic");
+        var gitDetected = IsGitWorkspaceMarker(gitMarker);
+        var plasticDetected = IsPlasticWorkspaceMarker(plasticMarker);
 
-        if (Directory.Exists(gitMarker) || File.Exists(gitMarker))
+        var vcsChoice = requestedVcs;
+        var explicitlySelected = requestedVcs is not null;
+        if (vcsChoice is null && gitDetected && plasticDetected)
         {
-            AppendLineIfMissing(Path.Combine(projectRoot, ".gitignore"), $"{UnBramblePaths.StateDirName}/");
-            Announce($"Ignore rules: added '{UnBramblePaths.StateDirName}/' to .gitignore (git detected).");
+            if (interactive)
+            {
+                Announce("Both Git and Plastic SCM workspaces were detected at the project root.");
+                Announce("Choose ignore rules: [g]it, [p]lastic, [b]oth, or [n]either (default).");
+                vcsChoice = ParseInteractiveVcsChoice(readLine());
+                explicitlySelected = true;
+            }
+            else
+            {
+                Announce(
+                    "Warning: both Git and Plastic SCM workspaces were detected; no root ignore file was changed. " +
+                    "Re-run init with --vcs git, --vcs plastic, --vcs both, or --vcs none.");
+                return;
+            }
         }
-        else if (Directory.Exists(plasticMarker))
+
+        vcsChoice ??= gitDetected ? "git" : plasticDetected ? "plastic" : null;
+        switch (vcsChoice)
         {
-            AppendLineIfMissing(Path.Combine(projectRoot, "ignore.conf"), UnBramblePaths.StateDirName);
-            Announce($"Ignore rules: added '{UnBramblePaths.StateDirName}' to ignore.conf (Plastic SCM detected).");
+            case "git":
+                AddGitIgnore(projectRoot, Announce, explicitlySelected);
+                break;
+            case "plastic":
+                AddPlasticIgnore(projectRoot, Announce, explicitlySelected);
+                break;
+            case "both":
+                AddGitIgnore(projectRoot, Announce, selected: true);
+                AddPlasticIgnore(projectRoot, Announce, selected: true);
+                break;
+            case "none":
+                Announce("Ignore rules: no root ignore file changed (none selected).");
+                break;
+            default:
+                Announce(
+                    $"Note: no valid Git or Plastic SCM workspace metadata detected at the project root -- add " +
+                    $"'{UnBramblePaths.StateDirName}/' to your VCS's ignore rules manually, or re-run init with --vcs.");
+                break;
         }
-        else
+    }
+
+    private static string? ParseVcsChoice(string? value)
+    {
+        if (value is null)
         {
-            Announce(
-                $"Note: no .git or .plastic detected at the project root -- add '{UnBramblePaths.StateDirName}/' " +
-                "to your VCS's ignore rules manually.");
+            return null;
         }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        if (normalized is "git" or "plastic" or "both" or "none")
+        {
+            return normalized;
+        }
+
+        throw new ArgReaderException("'--vcs' must be git, plastic, both, or none");
+    }
+
+    private static string ParseInteractiveVcsChoice(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "g" or "git" => "git",
+        "p" or "plastic" => "plastic",
+        "b" or "both" => "both",
+        _ => "none",
+    };
+
+    private static bool IsGitWorkspaceMarker(string markerPath)
+    {
+        if (Directory.Exists(markerPath))
+        {
+            return File.Exists(Path.Combine(markerPath, "HEAD"));
+        }
+
+        if (!File.Exists(markerPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var firstLine = File.ReadLines(markerPath).FirstOrDefault()?.TrimStart('\uFEFF', ' ', '\t');
+            return firstLine is not null
+                && firstLine.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase)
+                && firstLine["gitdir:".Length..].Trim().Length > 0;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPlasticWorkspaceMarker(string markerPath) =>
+        Directory.Exists(markerPath)
+        && (File.Exists(Path.Combine(markerPath, "plastic.workspace"))
+            || File.Exists(Path.Combine(markerPath, "plastic.selector"))
+            || File.Exists(Path.Combine(markerPath, "plastic.wktree")));
+
+    private static void AddGitIgnore(string projectRoot, Action<string> announce, bool selected)
+    {
+        AppendLineIfMissing(Path.Combine(projectRoot, ".gitignore"), $"{UnBramblePaths.StateDirName}/");
+        announce(
+            $"Ignore rules: added '{UnBramblePaths.StateDirName}/' to .gitignore " +
+            (selected ? "(Git selected)." : "(Git detected)."));
+    }
+
+    private static void AddPlasticIgnore(string projectRoot, Action<string> announce, bool selected)
+    {
+        AppendLineIfMissing(Path.Combine(projectRoot, "ignore.conf"), UnBramblePaths.StateDirName);
+        announce(
+            $"Ignore rules: added '{UnBramblePaths.StateDirName}' to ignore.conf " +
+            (selected ? "(Plastic SCM selected)." : "(Plastic SCM detected)."));
     }
 
     private static void WriteSelfIgnoreFile(string stateDir)
@@ -3255,7 +3370,7 @@ public static class Program
               unbramble --version
               unbramble --help
               unbramble [path]                (no verb: first-time setup, or a quick status glance)
-              unbramble init [path] [--json] [--no-agents] [--no-defender] [--defender]
+              unbramble init [path] [--json] [--no-agents] [--no-defender] [--defender] [--vcs git|plastic|both|none]
               unbramble index [path] [--full] [--json]
               unbramble monitor [path]
               unbramble stop
@@ -3294,7 +3409,7 @@ public static class Program
     {
         var usage = verb switch
         {
-            "init" => "unbramble init [path] [--json] [--verbose] [--no-agents] [--no-defender] [--defender]",
+            "init" => "unbramble init [path] [--json] [--verbose] [--no-agents] [--no-defender] [--defender] [--vcs git|plastic|both|none]",
             "index" => "unbramble index [path] [--full] [--json] [--verbose]",
             "monitor" => "unbramble monitor [path]",
             "stop" => "unbramble stop",

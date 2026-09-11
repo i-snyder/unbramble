@@ -137,6 +137,30 @@ public class HomeCommandTests
     }
 
     [Fact]
+    public void NotInited_Interactive_BothValidVcsMarkers_PromptsAndUsesSelection()
+    {
+        using var fixture = FixtureCopy.Create();
+        var gitMarker = Path.Combine(fixture.Root, ".git");
+        Directory.CreateDirectory(gitMarker);
+        File.WriteAllText(Path.Combine(gitMarker, "HEAD"), "ref: refs/heads/main" + Environment.NewLine);
+        var plasticMarker = Path.Combine(fixture.Root, ".plastic");
+        Directory.CreateDirectory(plasticMarker);
+        File.WriteAllText(Path.Combine(plasticMarker, "plastic.workspace"), "fixture" + Environment.NewLine);
+
+        var (exitCode, stdOut, _) = RunHome(
+            ["-p", fixture.Root],
+            isInteractive: true,
+            supportsAnsi: false,
+            Answers("y", "y", "p"));
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Choose ignore rules", stdOut, StringComparison.Ordinal);
+        Assert.Contains("Plastic SCM selected", stdOut, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(fixture.Root, "ignore.conf")));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, ".gitignore")));
+    }
+
+    [Fact]
     public void NotInited_Interactive_AcceptAccept_AnsiRenderer_ReportsDoneWithColor()
     {
         using var fixture = FixtureCopy.Create();
@@ -168,8 +192,8 @@ public class HomeCommandTests
     /// `HomeCommand.RunCaseCAndD` now runs `Program.ExecuteInitPreScan` to completion first and
     /// only constructs the renderer afterward -- asserted here via stdout ordering: the pre-scan
     /// step's own announcement text (from `SetUpIgnoreFiles`, unconditionally printed either way
-    /// since this fixture has no `.git`/`.plastic` marker) must appear before the renderer's first
-    /// output, never after.
+    /// since this fixture has no valid Git/Plastic workspace metadata) must appear before the
+    /// renderer's first output, never after.
     ///
     /// Anchored on the renderer's cursor-hide specifically, NOT on "the first ANSI escape
     /// anywhere in stdout" as it originally was. That was only ever a proxy for "the renderer
@@ -186,7 +210,9 @@ public class HomeCommandTests
         var (exitCode, stdOut, _) = RunHome(["-p", fixture.Root], isInteractive: true, supportsAnsi: true, Answers("y", "yes"));
 
         Assert.Equal(0, exitCode);
-        var ignoreFilesIndex = stdOut.IndexOf("Note: no .git or .plastic detected", StringComparison.Ordinal);
+        var ignoreFilesIndex = stdOut.IndexOf(
+            "Note: no valid Git or Plastic SCM workspace metadata detected",
+            StringComparison.Ordinal);
         var rendererStartIndex = stdOut.IndexOf(RendererCursorHide, StringComparison.Ordinal);
         Assert.True(ignoreFilesIndex >= 0, "expected SetUpIgnoreFiles' announcement in stdout");
         Assert.True(rendererStartIndex >= 0, "expected the ANSI renderer to have produced output");

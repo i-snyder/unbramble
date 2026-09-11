@@ -104,6 +104,8 @@ Store rules: recursive walks use a closure CTE followed by a non-recursive `MIN(
 
 All owned state lives under project-root `.unbramble/`, never Unity's `Library/`. A detached watcher holds files open, and it must not block the standard workflow of deleting `Library/`. `init` excludes and configures VCS ignores for `.unbramble/`.
 
+Root ignore-file setup validates workspace metadata instead of trusting an empty marker: a Git directory needs `.git/HEAD`, a Git marker file needs a non-empty `gitdir:` pointer, and a Plastic SCM directory needs recognizable workspace state. Exactly one valid VCS is configured automatically. If both are valid, an interactive run asks which ignore rules to update; a non-interactive run changes neither unless `--vcs git|plastic|both|none` makes the choice explicit.
+
 Two lock scopes now live in that directory: `watcher.lock` elects one long-lived watcher, while `index-writer-intent.lock` plus `index-writer.lock` serialize each finite SQLite mutation against writers and query readers. Writer intent blocks new readers while existing readers drain, so continuous queries can't starve an update. Lock files are never stale state to delete; the OS-owned handles release on process death.
 
 Governing invariant: **never wrong, only sometimes slower.**
@@ -247,7 +249,7 @@ The blind-spots footer is **unconditional output**, every run, both formats — 
 ## CLI shape
 
 ```
-unbramble init [path] [--no-agents]  first run: build the index, write AGENTS.md/CLAUDE.md, print watcher setup guidance
+unbramble init [path] [--no-agents] [--vcs git|plastic|both|none]  build the index, set up agent guidance and chosen VCS ignore rules
 unbramble index [path] [--full]    explicit refresh / rebuild
 unbramble monitor [path]           ensure the background watcher exists and show live progress
 unbramble stop                     stop live unbramble background processes

@@ -194,7 +194,12 @@ public static class HomeCommand
         // begins -- see Program.ExecuteInitPreScan's own doc comment for the real bug this
         // ordering fixes: a renderer constructed before this step ticked (and its redraws
         // interleaved with the Defender prompt's own stdout) before and during the prompt.
-        Program.ExecuteInitPreScan(engine, announce: true, setUpAgents: true, interactive: true);
+        Program.ExecuteInitPreScan(
+            engine,
+            announce: true,
+            setUpAgents: true,
+            interactive: true,
+            readLine: env.ReadLine);
 
         IndexSummary summary;
         if (env.SupportsAnsi)
