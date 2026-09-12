@@ -41,6 +41,14 @@ jobs:
           }
           "RELEASE_VERSION=$projectVersion" >> $env:GITHUB_ENV
           $tag = "v$projectVersion"
+          $releaseNotesPath = "./docs/release-notes/$tag.md"
+          if (-not (Test-Path -LiteralPath $releaseNotesPath -PathType Leaf)) {
+            throw "Missing curated release notes at '$releaseNotesPath'."
+          }
+          $releaseNotes = Get-Content -LiteralPath $releaseNotesPath -Raw
+          if ([string]::IsNullOrWhiteSpace($releaseNotes)) {
+            throw "Curated release notes at '$releaseNotesPath' are empty."
+          }
           $existingTag = git ls-remote --tags origin "refs/tags/$tag"
           if ($LASTEXITCODE -ne 0) {
             throw "Could not check whether tag '$tag' already exists."
@@ -63,7 +71,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "v$env:RELEASE_VERSION"
-          gh release create $tag ./artifacts/unbramble-win-x64.zip ./artifacts/unbramble-win-x64.zip.sha256 --target $env:GITHUB_SHA --title "UnBramble $tag" --generate-notes --fail-on-no-commits
+          $releaseNotes = Get-Content -LiteralPath "./docs/release-notes/$tag.md" -Raw
+          gh release create $tag ./artifacts/unbramble-win-x64.zip ./artifacts/unbramble-win-x64.zip.sha256 --target $env:GITHUB_SHA --title "UnBramble $tag" --notes $releaseNotes --generate-notes --fail-on-no-commits
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub release creation failed for $tag."
           }
