@@ -4,6 +4,47 @@ UnBramble supports Windows x64 and doesn't require a separate .NET installation.
 
 ## Install
 
+Install UnBramble with WinGet:
+
+```powershell
+winget install --id i-snyder.unbramble --exact
+```
+
+Open a new terminal at the root of a Unity project and run `unbramble`.
+
+## Update
+
+Stop any background watchers, then update the package:
+
+```powershell
+unbramble stop
+winget upgrade --id i-snyder.unbramble --exact
+```
+
+Run `unbramble` in each indexed project afterward. If it reports that the managed agent guidance is out of date, run `unbramble init` there to refresh that block. The refresh preserves other `AGENTS.md` content and the existing index makes the scan incremental.
+
+## Uninstall
+
+Before removing the CLI, run this once from the root of each Unity project where you set up UnBramble:
+
+```powershell
+unbramble uninstall
+```
+
+From anywhere else, pass the project path: `unbramble uninstall <path-to-unity-project>`.
+
+The command stops every live UnBramble process across all projects, removes Defender exclusions that UnBramble added for this project, restores or cleans its `AGENTS.md`, `CLAUDE.md`, and VCS-ignore changes, then deletes `.unbramble/`. Unrelated content and edits made after setup are preserved. If the Defender administrator prompt is dismissed or cleanup can't be confirmed, uninstall stops before changing project files so you can retry safely.
+
+Before changing anything, the command lists exactly what it will remove and asks for confirmation. Use `-y` or `--yes` only when deliberately running it non-interactively.
+
+After cleaning every project, remove the WinGet package:
+
+```powershell
+winget uninstall --id i-snyder.unbramble --exact
+```
+
+## Manual ZIP installation
+
 Download `unbramble-win-x64.zip` and `unbramble-win-x64.zip.sha256` from the [latest release](https://github.com/i-snyder/unbramble/releases/latest). In the download directory, verify the ZIP:
 
 ```powershell
@@ -16,25 +57,13 @@ Extract every file to a folder you'll keep, such as `C:\Users\your-name\Apps\UnB
 
 Open a new terminal at the root of a Unity project and run `unbramble`.
 
-## Update
+### Update a manual installation
 
 To update, run `unbramble stop`, then replace every file in the installation folder with the new release. Run `unbramble` in each indexed project afterward; if it reports that the managed agent guidance is out of date, run `unbramble init` there to refresh that block. The refresh preserves other `AGENTS.md` content and the existing index makes the scan incremental.
 
-## Uninstall
+### Remove a manual installation
 
-Run this once from the root of each Unity project where you set up UnBramble:
-
-```powershell
-unbramble uninstall
-```
-
-From anywhere else, pass the project path: `unbramble uninstall <path-to-unity-project>`.
-
-The command stops every live UnBramble process across all projects, removes Defender exclusions that UnBramble added for this project, restores or cleans its `AGENTS.md`, `CLAUDE.md`, and VCS-ignore changes, then deletes `.unbramble/`. Unrelated content and edits made after setup are preserved. If the Defender administrator prompt is dismissed or cleanup can't be confirmed, uninstall stops before changing project files so you can retry safely.
-
-Before changing anything, the command lists exactly what it will remove and asks for confirmation. Use `-y` or `--yes` only when deliberately running it non-interactively.
-
-After cleaning every project, remove the CLI itself from anywhere:
+After cleaning every project as described above, remove the CLI itself from anywhere:
 
 ```powershell
 unbramble uninstall --machine

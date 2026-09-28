@@ -1,6 +1,6 @@
 # Releasing UnBramble
 
-GitHub Releases holds the canonical Windows package.
+GitHub Releases holds the canonical Windows package. WinGet is the default installation path and receives each version through a separate manifest pull request after the GitHub release is verified.
 
 ## Verify
 
@@ -14,5 +14,7 @@ Run the manual **Verify** workflow whenever you want a read-only GitHub check of
 4. On GitHub, open **Actions → Release → Run workflow**, select `main`, and run it.
 5. The workflow reads the project version, requires matching nonempty curated notes, runs the complete verification sequence, checks dependencies, packages the release, creates the `v<version>` tag at that exact commit, and publishes the ZIP and checksum with the curated notes followed by GitHub's generated changelog.
 6. Download the release into a clean directory and verify its checksum, `unbramble --version`, first-run setup in a representative Unity project, project uninstall, and machine uninstall.
+7. Use WinGetCreate to generate the update manifest from the published ZIP, including the version, release date, and release-notes URL. Review it and run `winget validate --manifest <manifest-directory>`.
+8. Open the manifest pull request against `microsoft/winget-pkgs`. After it merges, confirm the publish pipeline succeeds and `winget show --id i-snyder.unbramble --exact` returns the new version, installer URL, and checksum.
 
 The workflow fails unless it runs from `main` with a new stable project version. `package-release.ps1` rejects missing or extra package files. Never distribute the executable alone or replace an asset under an existing public release tag.

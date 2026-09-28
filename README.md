@@ -10,10 +10,13 @@ UnBramble gives coding agents the project-wide context they need to trace the im
 
 ## Quick Start
 
-1. Download `unbramble-win-x64.zip` from the [latest release](https://github.com/i-snyder/unbramble/releases/latest).
-2. Create a folder you'll keep, such as `C:\Users\your-name\Apps\UnBramble`, and extract the ZIP into it.
-3. Add your UnBramble folder to your user PATH.
-4. Open a new terminal at the root of a Unity project and run:
+1. Install UnBramble:
+
+   ```powershell
+   winget install --id i-snyder.unbramble --exact
+   ```
+
+2. Open a new terminal at the root of a Unity project and run:
 
    ```powershell
    unbramble
@@ -25,7 +28,7 @@ UnBramble is agent-agnostic: it works with essentially any agent that can read p
 
 After that, new agents in that project will pick it up automatically. Work with your agent normally: it can find its way through the project whenever it needs dependency context, without you manually mapping connections for every session.
 
-See [installing](docs/installing.md) for checksum verification, upgrades, and uninstalling. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
+See [installing](docs/installing.md) for upgrades, uninstalling, or a manual ZIP installation with checksum verification. Prefer to inspect and compile it yourself? See [building from source](docs/building.md).
 
 ## Built from real Unity work
 
