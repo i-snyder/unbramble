@@ -203,7 +203,7 @@ public static class Program
             return AnsiStyle.Alive("done.", ansi) + body[5..];
         }
 
-        if (subject is "Processes" or "Defender exclusions" or "Project setup" or "Project state" or "Uninstall" or "User Path")
+        if (subject is "Processes" or "Defender exclusions" or "Project setup" or "Project state" or "Uninstall" or "Update" or "User Path")
         {
             foreach (var verb in new[] { "stopped", "removed", "restored", "complete", "scheduled", "updated" })
             {
@@ -329,6 +329,7 @@ public static class Program
                 "watch-worker" => RunWatchWorker(rest),
                 "monitor" => RunMonitor(rest),
                 "stop" => RunStop(rest),
+                "update" => RunUpdate(rest),
                 "uninstall" => RunUninstall(rest),
                 "defender" => RunDefender(rest),
 
@@ -2904,6 +2905,33 @@ public static class Program
         return StopAllProcesses(reader.ResolveStartPath());
     }
 
+    /// <summary>Updates a WinGet-managed installation after this portable executable exits, since
+    /// WinGet cannot overwrite a portable binary while that binary is still running.</summary>
+    private static int RunUpdate(string[] rest)
+    {
+        var reader = ArgReader.Parse(rest, [], []);
+        if (reader.Positional is not null || reader.Path is not null)
+        {
+            WriteError("'update' does not accept a project path or other arguments.");
+            return 1;
+        }
+
+        if (!ConsoleCapabilities.IsInteractive)
+        {
+            WriteError(
+                "'update' requires an interactive terminal because WinGet opens in a separate window. " +
+                "In a script, run 'unbramble stop' and then 'winget upgrade --id i-snyder.unbramble --exact'.");
+            return 1;
+        }
+
+        return PackageUpdater.Run(
+            PackageUpdater.Dependencies.CreateReal(() => StopAllProcesses(Directory.GetCurrentDirectory())),
+            WriteSetupLine,
+            WriteError,
+            Console.Out,
+            Console.Error);
+    }
+
     /// <summary>Detaches one Unity project cleanly, or removes the manual ZIP installation from
     /// this machine with <c>--machine</c>. Both paths print an exact plan and require explicit
     /// confirmation before their first mutation.</summary>
@@ -3374,6 +3402,7 @@ public static class Program
               unbramble index [path] [--full] [--json]
               unbramble monitor [path]
               unbramble stop
+              unbramble update
               unbramble uninstall [path] [-y|--yes]       (remove UnBramble from one Unity project)
               unbramble uninstall --machine [-y|--yes]    (remove the manual installation from this machine)
               unbramble defender status [path]
@@ -3413,6 +3442,7 @@ public static class Program
             "index" => "unbramble index [path] [--full] [--json] [--verbose]",
             "monitor" => "unbramble monitor [path]",
             "stop" => "unbramble stop",
+            "update" => "unbramble update",
             "uninstall" => "unbramble uninstall [path] [-y|--yes] | unbramble uninstall --machine [-y|--yes]",
             "defender" => "unbramble defender <status|setup|remove> [path]",
             "who-uses" => "unbramble who-uses <path|guid|symbol> [--guids file] [--symbol] [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--json|--jsonl] [--verbose]",

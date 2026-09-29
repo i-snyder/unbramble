@@ -29,6 +29,7 @@ public class AgentWorkflowFeedbackTests
     [InlineData("who-uses")]
     [InlineData("audit-assets")]
     [InlineData("stats")]
+    [InlineData("update")]
     public void VerbHelp_ExitsZeroWithoutOpeningAProject(string verb)
     {
         var result = CliRunner.Run(verb, "--help");

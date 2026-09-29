@@ -14,12 +14,13 @@ Open a new terminal at the root of a Unity project and run `unbramble`.
 
 ## Update
 
-Stop any background watchers, then update the package:
+Update a WinGet installation from anywhere:
 
 ```powershell
-unbramble stop
-winget upgrade --id i-snyder.unbramble --exact
+unbramble update
 ```
+
+The command confirms that WinGet manages the package, stops every live UnBramble process, then opens WinGet in a separate window after the running CLI exits. A manual ZIP installation is left untouched and directed to the manual steps below.
 
 Run `unbramble` in each indexed project afterward. If it reports that the managed agent guidance is out of date, run `unbramble init` there to refresh that block. The refresh preserves other `AGENTS.md` content and the existing index makes the scan incremental.
 
