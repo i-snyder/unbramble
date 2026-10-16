@@ -1252,7 +1252,9 @@ public sealed class UnBrambleStore : IDisposable
     /// symbols, exactly like an asset-graph referencer. One hop = one file-level edge regardless
     /// of kind; this is the SAME view `dead-candidates` walks forward for liveness propagation,
     /// so who-uses and liveness can never disagree about what "referenced" means.
-    /// The depth cap is the ONLY cycle terminator (plain UNION does not terminate cycles).
+    /// UNION deduplicates (file_id, depth) states before expansion: alternate routes to the
+    /// same file at the same depth have identical successors. The cap still bounds cycles,
+    /// since a file reached again at a different depth is a distinct state.
     /// HAVING is applied AFTER MIN(depth), not WHERE before it: in a cycle the seed reappears
     /// at depth 2+, and WHERE depth&gt;0 would wrongly admit that reappearance while
     /// HAVING MIN(depth)&gt;0 correctly excludes the seed itself.
@@ -1262,7 +1264,7 @@ public sealed class UnBrambleStore : IDisposable
         const string sql = """
             WITH RECURSIVE walk(file_id, depth) AS (
               SELECT @target, 0
-              UNION ALL
+              UNION
               SELECT uw.source_file_id, w.depth + 1
               FROM unified_walk_edges uw
               JOIN walk w ON uw.target_file_id = w.file_id
@@ -1288,7 +1290,7 @@ public sealed class UnBrambleStore : IDisposable
         const string sql = """
             WITH RECURSIVE walk(file_id, depth) AS (
               SELECT @target, 0
-              UNION ALL
+              UNION
               SELECT uw.target_file_id, w.depth + 1
               FROM unified_walk_edges uw
               JOIN walk w ON uw.source_file_id = w.file_id
@@ -1319,7 +1321,7 @@ public sealed class UnBrambleStore : IDisposable
     }
 
     /// <summary>
-    /// True if the raw (non-deduped) walk reached exactly the depth cap for the given seed —
+    /// True if any walk reached exactly the depth cap for the given seed —
     /// a signal that the cap may have cut off real depth, surfaced to callers as `truncated`
     /// so the tool never silently claims a transitive answer is complete when it might not be.
     /// </summary>
@@ -1330,7 +1332,7 @@ public sealed class UnBrambleStore : IDisposable
         var sql = $"""
             WITH RECURSIVE walk(file_id, depth) AS (
               SELECT @target, 0
-              UNION ALL
+              UNION
               SELECT {emitCol}, w.depth + 1
               FROM unified_walk_edges uw
               JOIN walk w ON {joinCol} = w.file_id

@@ -51,8 +51,9 @@ Choose representative targets from the project: a high-fan-out asset, a semantic
 
 1. Run one query without a fresh watcher heartbeat. This exercises the first freshness sweep plus the query.
 2. Run the asset query both with and without `--under`, including a case with a large result set.
-3. Run the semantic queries sequentially, then repeat them and compare the saved outputs byte-for-byte.
-4. Run two or three semantic queries concurrently as a diagnostic, then compare each result with its sequential output.
+3. Run `uses` and `who-uses` with `--transitive --depth 30 --json` on representative assets with shared dependencies or cycles. Check minimum depths and unresolved references against known chains; a cycle may still report `truncated: true` even when every reachable file has already appeared.
+4. Run the semantic queries sequentially, then repeat them and compare the saved outputs byte-for-byte.
+5. Run two or three semantic queries concurrently as a diagnostic, then compare each result with its sequential output.
 
 Every query must complete without an unhealthy-state warning, timeout, or missing rows. Concurrent semantic queries may be slower because separate CLI processes don't share query-time derived results; record the slowdown, but treat changed output, an unbounded wait, or a failed process as a bug. Keep target names, paths, and raw output private when reporting measurements.
 
@@ -86,7 +87,7 @@ A smoke-test failure after deleting a proven candidate is a correctness bug unti
 
 - [ ] `rg-parity.ps1` reports zero mismatches.
 - [ ] `compare-unity-deps.ps1` reports zero containment violations, including UI Toolkit and Shader Graph assets.
-- [ ] Representative asset, semantic, ambiguous-symbol, and first-sweep queries complete predictably, and repeated outputs are identical.
+- [ ] Representative asset, deep transitive, semantic, ambiguous-symbol, and first-sweep queries complete predictably, and repeated outputs are identical.
 - [ ] Concurrent semantic-query diagnostics complete with the same results; any slowdown is recorded.
 - [ ] `dead-candidates` passes every availability gate.
 - [ ] At least one small delete-and-smoke-test cycle succeeds.

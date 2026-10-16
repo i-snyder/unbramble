@@ -1,4 +1,7 @@
+using System.Reflection;
+using Microsoft.Data.Sqlite;
 using UnBramble.Core;
+using UnBramble.Core.Store;
 using UnBramble.Tests.TestSupport;
 
 namespace UnBramble.Tests;
@@ -6,6 +9,101 @@ namespace UnBramble.Tests;
 /// <summary>Section 6.6: transitive who-uses set/depth correctness and cycle termination.</summary>
 public class TransitiveQueryTests
 {
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public void ConvergingRoutes_CompleteWithinWorkBudget_PreserveDepthAndCap(bool forward, bool cycle)
+    {
+        using var temp = TempDir.Create();
+        using var store = UnBrambleStore.OpenOrCreate(Path.Combine(temp.Root, "graph.db"), "6000.0.0f1");
+        // Access the live connection only to impose a deterministic SQLite work budget.
+        // A regression must fail promptly instead of hanging the test runner on 3^16 routes.
+        var connection = (SqliteConnection)typeof(UnBrambleStore)
+            .GetField("_connection", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+
+        const int layerCount = 16;
+        var layers = new List<long[]> { new long[] { 1 } };
+        for (var layer = 0; layer < layerCount; layer++)
+        {
+            layers.Add(Enumerable.Range(0, 3).Select(i => (long)(2 + layer * 3 + i)).ToArray());
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "INSERT INTO files(id, path, kind, mtime, size) VALUES (@id, @path, 'asset', 0, 0);";
+            var idParameter = command.Parameters.Add("@id", SqliteType.Integer);
+            var pathParameter = command.Parameters.Add("@path", SqliteType.Text);
+            foreach (var id in layers.SelectMany(layer => layer))
+            {
+                idParameter.Value = id;
+                pathParameter.Value = $"Assets/Node{id}.asset";
+                command.ExecuteNonQuery();
+            }
+        }
+
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                INSERT INTO path_refs(source_file_id, target_path_raw, target_path_norm, line)
+                SELECT @source, path, path, 1 FROM files WHERE id = @target;
+                """;
+            var sourceParameter = command.Parameters.Add("@source", SqliteType.Integer);
+            var targetParameter = command.Parameters.Add("@target", SqliteType.Integer);
+            for (var layer = 1; layer <= layerCount; layer++)
+            {
+                foreach (var source in layers[layer - 1])
+                foreach (var target in layers[layer])
+                {
+                    sourceParameter.Value = source;
+                    targetParameter.Value = target;
+                    command.ExecuteNonQuery();
+                }
+            }
+
+            if (cycle)
+            {
+                foreach (var source in layers[^1])
+                {
+                    sourceParameter.Value = source;
+                    targetParameter.Value = 1;
+                    command.ExecuteNonQuery();
+                }
+            }
+        }
+
+        // Forward starts at the single root; reverse starts at one of the final leaves.
+        var seed = forward ? 1 : layers[^1][0];
+        var callbacks = 0;
+        SQLitePCL.raw.sqlite3_progress_handler(connection.Handle, 1000, _ => ++callbacks > 2000 ? 1 : 0, null);
+        try
+        {
+            var closure = forward ? store.GetForwardClosure(seed, 30) : store.GetReverseClosure(seed, 30);
+            var expected = new Dictionary<long, int>();
+            for (var layer = forward ? 1 : 0; layer < (forward || cycle ? layers.Count : layerCount); layer++)
+            {
+                foreach (var id in layers[layer])
+                {
+                    if (id != seed)
+                    {
+                        expected[id] = forward ? layer : layer == layerCount ? layerCount + 1 : layerCount - layer;
+                    }
+                }
+            }
+
+            Assert.Equal(expected.OrderBy(kv => kv.Key), closure.OrderBy(kv => kv.Key));
+            callbacks = 0;
+            Assert.Equal(cycle, store.WalkHitDepthCap(forward, seed, 30));
+            callbacks = 0;
+            Assert.True(store.WalkHitDepthCap(forward, seed, layerCount));
+        }
+        finally
+        {
+            SQLitePCL.raw.sqlite3_progress_handler(connection.Handle, 0, null, null);
+        }
+    }
+
     [Fact]
     public void WhoUses_FooCs_Transitive_YieldsExactSetWithMinDepth()
     {
@@ -45,12 +143,11 @@ public class TransitiveQueryTests
         using var engine = UnBrambleEngine.Open(fixture.Root);
         engine.RunIndex(full: false);
 
-        // A.asset <-> B.asset is a genuine 2-cycle (A references B, B references A). A plain
-        // UNION recursive CTE would never terminate here; the depth cap must be what stops it.
+        // A.asset <-> B.asset is a genuine 2-cycle. Deduplicating (file, depth) states still
+        // revisits each file at new depths, so the cap must stop the walk.
         var resolution = engine.ResolveQueryTarget("Assets/Data/A.asset");
 
-        // The depth cap is the only cycle terminator (plain UNION never terminates a cycle);
-        // simply calling this and getting a return value at all is part of what's under test.
+        // Calling this and getting a return value is part of what's under test.
         var answer = engine.WhoUses(resolution.Target!, transitive: true, depthCap: 10);
 
         var bEdges = answer.Results.Where(r => r.SourcePath.Equals("Assets/Data/B.asset", StringComparison.OrdinalIgnoreCase)).ToList();
