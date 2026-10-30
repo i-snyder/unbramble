@@ -27,9 +27,9 @@ public static class HeartbeatFile
     /// <summary>
     /// Version of the cross-process freshness contract independently of the SQLite shape. Bump
     /// whenever a writer must follow new rules for a heartbeat to vouch for its committed state.
-    /// Protocol 3 adds the watcher lock's fail-closed freshness-suppression byte.
+    /// Protocol 4 requires discovery and watching of manifest-referenced local package folders.
     /// </summary>
-    public const int CurrentProtocolVersion = 3;
+    public const int CurrentProtocolVersion = 4;
 
     public const string RelativePath = UnBramblePaths.HeartbeatRelativePath;
 

@@ -106,8 +106,8 @@ internal sealed class ScanHeartbeat : IDisposable
 }
 
 /// <summary>
-/// Walks a Unity project's configured roots (plus the hardcoded identity-only
-/// Library/PackageCache root) and produces the current in-scope file inventory. Reads only
+/// Walks a Unity project's configured roots, manifest local folder dependencies, and the
+/// identity-only Library/PackageCache root to produce the current in-scope file inventory. Reads only
 /// filesystem metadata and .meta guid lines — never touches asset content (that's a separate
 /// parsing pass).
 /// </summary>
@@ -224,6 +224,26 @@ public sealed class Scanner
                 slowDirs);
         }
 
+        var localPackageRoots = LocalPackageRoots.Discover(projectRoot, config, warnings);
+        foreach (var package in localPackageRoots)
+        {
+            ScanRoot(
+                projectRoot,
+                package.RealPath,
+                package.ProjectPrefix,
+                identityOnly: false,
+                config,
+                visitedReal,
+                entries,
+                roots,
+                warnings,
+                deferredRootLinks,
+                heartbeat,
+                knownMeta,
+                rootStats,
+                slowDirs);
+        }
+
         ScanRoot(
             projectRoot,
             Path.Combine("Library", "PackageCache"),
@@ -267,7 +287,7 @@ public sealed class Scanner
         // Resolved here, at the scan boundary, with the same "first claim wins" convention
         // `visitedReal` already uses for same-real-path duplicates -- deterministic because
         // `entries` is built in a fixed encounter order (config.Roots roots in listed order,
-        // then Library/PackageCache, then deferred root-link jobs in their own stable sorted job
+        // then manifest local packages, Library/PackageCache, and deferred root-link jobs in their stable sorted job
         // order, then nested links in their stable sorted order) -- but surfaced via `warnings`
         // (unlike `visitedReal`'s fully silent skip) since a path collision from two DIFFERENT
         // real files is a genuinely surprising topology a project maintainer would want to know
@@ -314,7 +334,7 @@ public sealed class Scanner
         // diagnostic sample, not a complete audit trail.
         var slowestDirs = slowDirs.OrderByDescending(d => d.ElapsedMs).Take(20).ToList();
 
-        return new ScanResult(entries, roots, warnings, rootStats, slowestDirs);
+        return new ScanResult(entries, roots, warnings, rootStats, slowestDirs, LocalPackageRoots.Fingerprint(localPackageRoots));
     }
 
     /// <summary>
@@ -355,6 +375,7 @@ public sealed class Scanner
             // stolen through a nested path by a faster worker.
             if (visitedReal.TryAdd(Normalize(link.RealPath), 0))
             {
+                roots.Add(new RootMapping(Normalize(link.RealPath), link.ProjectPrefix));
                 jobs.Add(link);
             }
         }
@@ -429,6 +450,7 @@ public sealed class Scanner
                 continue;
             }
 
+            roots.Add(new RootMapping(Normalize(link.RealPath), link.ProjectPrefix));
             var counters = new ScanCounters();
             var linkStopwatch = Stopwatch.StartNew();
             Walk(
@@ -503,6 +525,11 @@ public sealed class Scanner
             resolvedTarget = target;
         }
 
+        if (!visitedReal.TryAdd(Normalize(realPath), 0))
+        {
+            return;
+        }
+
         roots.Add(new RootMapping(Normalize(realPath), projectPrefix));
 
         var counters = new ScanCounters();
@@ -516,7 +543,7 @@ public sealed class Scanner
             entries,
             roots,
             warnings,
-            rootAlreadyClaimed: false,
+            rootAlreadyClaimed: true,
             deferReparseChildren: true,
             deferReparseDescendants: false,
             deferredRootLinks,
@@ -677,13 +704,18 @@ public sealed class Scanner
                     continue;
                 }
 
-                roots.Add(new RootMapping(Normalize(target), childPrefix));
                 if (deferReparseChildren)
                 {
                     deferredLinks!.Add(new DeferredLink(target, childPrefix, identityOnly));
                 }
                 else
                 {
+                    if (!visitedReal.TryAdd(Normalize(target), 0))
+                    {
+                        continue;
+                    }
+
+                    roots.Add(new RootMapping(Normalize(target), childPrefix));
                     // Not a deferred (root-level) link -- an inline junction encountered mid-walk
                     // folds into whichever root/job is already in progress rather than getting
                     // its own ScanRootStat entry. Only root-level junctions (the important
@@ -699,7 +731,7 @@ public sealed class Scanner
                         entries,
                         roots,
                         warnings,
-                        rootAlreadyClaimed: false,
+                        rootAlreadyClaimed: true,
                         deferReparseChildren: false,
                         deferReparseDescendants: false,
                         deferredLinks: null,
@@ -771,9 +803,10 @@ public sealed class Scanner
     /// Classify/TryReadMetaGuid helpers) so the two paths can never classify the same file
     /// differently. Returns null if the path is gone, hidden/excluded, or not a recognized
     /// reference source/folder-with-meta — the caller's diff treats a null result for a
-    /// previously-known path as a removal.
+    /// previously-known path as a removal. A mapped <paramref name="fullPath"/> lets virtual
+    /// Packages/name paths use the same persisted physical-root mapping as the full scan.
     /// </summary>
-    public ScannedFileEntry? ScanSingleFile(string projectRoot, string projectRelativePath, UnBrambleConfig config, List<string> warnings)
+    public ScannedFileEntry? ScanSingleFile(string projectRoot, string projectRelativePath, UnBrambleConfig config, List<string> warnings, string? fullPath = null)
     {
         var segments = projectRelativePath.Split('/');
         for (var i = 0; i < segments.Length - 1; i++)
@@ -794,7 +827,7 @@ public sealed class Scanner
             return null;
         }
 
-        var fullPath = Path.Combine(projectRoot, projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        fullPath ??= Path.Combine(projectRoot, projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
 
         bool isDirectory;
         try

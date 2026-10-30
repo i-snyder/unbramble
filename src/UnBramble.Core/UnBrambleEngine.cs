@@ -31,6 +31,7 @@ public sealed class UnBrambleEngine : IDisposable
     private readonly UnBrambleStore _store;
     private FileStream? _queryLease;
     private FileStream? _legacyWatcherGuard;
+    private IReadOnlyList<RootMapping> _pathRoots;
 
     // Watch-only persistent Roslyn compilation cache (see CsCompilationCache's own doc comment).
     // Null by default -- every one-shot CLI verb (init/index/stats/who-uses/etc.) and the pull-
@@ -106,6 +107,7 @@ public sealed class UnBrambleEngine : IDisposable
         Config = config;
         DbPath = dbPath;
         _store = store;
+        _pathRoots = OrderPathRoots(store.GetRoots());
         WasCreated = store.WasCreated;
         SchemaWasReset = store.SchemaWasReset;
         OpenWarnings = openWarnings;
@@ -241,13 +243,26 @@ public sealed class UnBrambleEngine : IDisposable
         Action<ScanProgress>? diagnosticsProgress = _watchCacheDiagnostics is null
             ? null
             : progress => _watchCacheDiagnostics!($"[scan-progress] dirs={progress.DirsVisited} files={progress.FilesSeen} current={progress.CurrentPath}");
-        var scan = scanner.Scan(ProjectRoot, Config, knownMeta, onProgress: (diagnosticsProgress, onScanProgress) switch
+        Action<ScanProgress>? scanProgress = (diagnosticsProgress, onScanProgress) switch
         {
             (null, null) => null,
             ({ } diag, null) => diag,
             (null, { } caller) => caller,
             ({ } diag, { } caller) => progress => { diag(progress); caller(progress); },
-        });
+        };
+        var scan = scanner.Scan(ProjectRoot, Config, knownMeta, onProgress: scanProgress);
+        var rootsChanged = !RootsMatch(_store.GetRoots(), scan.Roots);
+        if (existingFiles.Count > 0 && rootsChanged)
+        {
+            // A manifest can redirect the same logical paths to different files whose mtimes
+            // and sizes happen to match. Neither cached meta identities nor derived edges may
+            // survive that change of physical ownership.
+            onPhase?.Invoke("scan roots changed; rebuilding identities and references");
+            full = true;
+            _store.ResetData();
+            existingFiles.Clear();
+            scan = scanner.Scan(ProjectRoot, Config, knownMeta: null, onProgress: scanProgress);
+        }
         scanStopwatch.Stop();
 
         onPhase?.Invoke($"scan complete ({scan.Entries.Count:N0} entries); applying inventory diff");
@@ -257,10 +272,11 @@ public sealed class UnBrambleEngine : IDisposable
         // scanned roots are identical to what's already stored -- the common no-change-sweep
         // case pays for neither the diff-writes' empty transaction (already skipped inside
         // ApplyDiff) nor this one.
-        if (diff.Added != 0 || diff.Changed != 0 || diff.Removed != 0 || !RootsMatch(_store.GetRoots(), scan.Roots))
+        if (diff.Added != 0 || diff.Changed != 0 || diff.Removed != 0 || rootsChanged)
         {
             _store.ReplaceRoots(scan.Roots);
         }
+        _pathRoots = OrderPathRoots(_store.GetRoots());
 
         sweepStopwatch.Stop();
 
@@ -302,6 +318,8 @@ public sealed class UnBrambleEngine : IDisposable
             $"added={diff.Added} changed={diff.Changed} removed={diff.Removed} dirtyPaths={diff.DirtyPaths.Count}");
 
         AppendIndexHistory(full, scan, diff, phaseTimings, stopwatch.Elapsed);
+
+        _store.SetLocalPackageRootsFingerprint(scan.LocalPackageRootsFingerprint!);
 
         // Last write of a successful pass. Any exception above deliberately leaves the marker at
         // zero, making the next explicit index or query perform a clean full rebuild.
@@ -1305,9 +1323,9 @@ public sealed class UnBrambleEngine : IDisposable
     /// watcher's push path): each path is stat'd
     /// directly via <see cref="Scanner.ScanSingleFile"/> — no full <see cref="Scanner.Scan"/> —
     /// and diffed against its existing row. New/changed files are reparsed, missing ones
-    /// cascade-delete. Never touches the `roots` table (unlike <see cref="RunIndex"/>): a
-    /// targeted batch can't discover new junctions, which is exactly why the periodic self-heal
-    /// full sweep exists on top of this.
+    /// cascade-delete. Package manifest/root changes require a full sweep to rediscover roots;
+    /// ordinary targeted batches retain the persisted mappings. The periodic self-heal sweep
+    /// discovers other topology changes.
     /// </summary>
     public SweepDiff ApplyTargetedUpdate(IReadOnlyCollection<string> ownerProjectPaths)
     {
@@ -1320,9 +1338,9 @@ public sealed class UnBrambleEngine : IDisposable
 
         using var writerLease = IndexWriterLock.Acquire(ProjectRoot, message => _watchCacheDiagnostics?.Invoke(message));
 
-        if (!_store.IsIndexComplete())
+        if (!_store.IsIndexComplete() || ownerProjectPaths.Any(IsPackageDiscoveryPath))
         {
-            var recovery = RunIndexOwned(full: true, onScanProgress: null, onPhase: _watchCacheDiagnostics);
+            var recovery = RunIndexOwned(full: !_store.IsIndexComplete(), onScanProgress: null, onPhase: _watchCacheDiagnostics);
             return new SweepDiff(recovery.Added, recovery.Changed, recovery.Removed, recovery.Warnings, []);
         }
 
@@ -1330,11 +1348,12 @@ public sealed class UnBrambleEngine : IDisposable
 
         var scanStopwatch = Stopwatch.StartNew();
         var scanner = new Scanner();
+        _pathRoots = OrderPathRoots(_store.GetRoots());
         var scanWarnings = new List<string>();
         var entries = new List<ScannedFileEntry>();
         foreach (var path in ownerProjectPaths)
         {
-            var entry = scanner.ScanSingleFile(ProjectRoot, path, Config, scanWarnings);
+            var entry = scanner.ScanSingleFile(ProjectRoot, path, Config, scanWarnings, fullPath: ToFullPath(path));
             if (entry is not null)
             {
                 entries.Add(entry);
@@ -1446,7 +1465,7 @@ public sealed class UnBrambleEngine : IDisposable
                 FileStream? queryLease = IndexReadLock.Acquire(ProjectRoot, onPhase);
                 try
                 {
-                    if (_store.IsIndexComplete())
+                    if (_store.IsIndexComplete() && IsLocalPackageTopologyCurrent())
                     {
                         _queryLease = queryLease;
                         queryLease = null;
@@ -1460,7 +1479,7 @@ public sealed class UnBrambleEngine : IDisposable
                     queryLease?.Dispose();
                 }
 
-                onPhase?.Invoke("freshness: an overlapping index update did not complete -- recovering before answering");
+                onPhase?.Invoke("freshness: the index or local package roots changed -- refreshing before answering");
             }
         }
         finally
@@ -1500,7 +1519,8 @@ public sealed class UnBrambleEngine : IDisposable
             && watcherSnapshot is { IsFreshnessSuppressed: false }
             && !WasCreated
             && !SchemaWasReset
-            && _store.IsIndexComplete())
+            && _store.IsIndexComplete()
+            && IsLocalPackageTopologyCurrent())
         {
             // Auto-spawn telemetry only (docs/architecture.md, "Auto-spawn watcher") -- this
             // marker plays no role in the freshness decision above (already made) or in any
@@ -1585,6 +1605,8 @@ public sealed class UnBrambleEngine : IDisposable
             // A writer that held the lease when we arrived may have completed the repair while
             // we waited. Holding the same lease makes this recheck authoritative; don't pay for
             // a second full-project stat sweep when its completed state is already committed.
+            // EnsureFresh still validates local package topology under the final query lease;
+            // an unrelated completed batch can't vouch for an external link retarget.
             if (_store.IsIndexComplete())
             {
                 return FreshnessOutcome.SkippedCompletedConcurrentUpdate();
@@ -1638,7 +1660,8 @@ public sealed class UnBrambleEngine : IDisposable
 
                 if (heartbeatIsCompatible
                     && watcherSnapshot is { IsFreshnessSuppressed: false }
-                    && _store.IsIndexComplete())
+                    && _store.IsIndexComplete()
+                    && IsLocalPackageTopologyCurrent())
                 {
                     AutoWatchMarkers.TouchLastQuery(ProjectRoot, DateTime.UtcNow);
                     return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - h.UtcTimestamp);
@@ -1662,6 +1685,15 @@ public sealed class UnBrambleEngine : IDisposable
 
     private static readonly TimeSpan ConcurrentSweepPollInterval = TimeSpan.FromMilliseconds(250);
 
+    /// <summary>External package links can change without events on the old target. Validate
+    /// discovery before trusting a heartbeat; the watcher uses the same check to resync even
+    /// when no filesystem callback arrived.</summary>
+    internal bool IsLocalPackageTopologyCurrent()
+    {
+        var current = LocalPackageRoots.Discover(ProjectRoot, Config, []);
+        return string.Equals(_store.GetLocalPackageRootsFingerprint(), LocalPackageRoots.Fingerprint(current), StringComparison.Ordinal);
+    }
+
     private bool IsCompatibleHeartbeat(HeartbeatFile.Heartbeat heartbeat, string? watcherSessionId) =>
         heartbeat.Schema == UnBrambleStore.CurrentSchemaVersion
         && heartbeat.Protocol == HeartbeatFile.CurrentProtocolVersion
@@ -1669,8 +1701,29 @@ public sealed class UnBrambleEngine : IDisposable
         && !string.IsNullOrEmpty(heartbeat.WatcherSessionId)
         && string.Equals(heartbeat.WatcherSessionId, watcherSessionId, StringComparison.Ordinal);
 
-    private string ToFullPath(string projectRelativePath) =>
-        Path.Combine(ProjectRoot, projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
+    private static IReadOnlyList<RootMapping> OrderPathRoots(IReadOnlyList<RootMapping> roots) =>
+        [.. roots.OrderByDescending(r => r.ProjectPrefix.Length).ThenBy(r => r.ProjectPrefix, StringComparer.Ordinal)];
+
+    private string ToFullPath(string projectRelativePath)
+    {
+        // A mapped root can itself be a junction folder with a sibling .meta on the
+        // junction side. Only descendants use this target; the folder owner must use
+        // its ancestor mapping (or the project path) so appending .meta stays correct.
+        foreach (var root in _pathRoots)
+        {
+            if (projectRelativePath.StartsWith(root.ProjectPrefix + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.Combine(root.RealPath, projectRelativePath[(root.ProjectPrefix.Length + 1)..].Replace('/', Path.DirectorySeparatorChar));
+            }
+        }
+        return Path.Combine(ProjectRoot, projectRelativePath.Replace('/', Path.DirectorySeparatorChar));
+    }
+
+    private static bool IsPackageDiscoveryPath(string path) =>
+        path.Equals("Packages/manifest.json", StringComparison.OrdinalIgnoreCase)
+        || (path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase)
+            && (path.EndsWith("/package.json", StringComparison.OrdinalIgnoreCase)
+                || !path["Packages/".Length..].Contains('/')));
 
     public StatsResult GetStats() => _store.GetStats();
 
@@ -1702,7 +1755,7 @@ public sealed class UnBrambleEngine : IDisposable
         return new SyntacticAssemblyDetail(d.Name, d.Reason, d.IsPackageSourced, neverCompiled, externalReferencers);
     }
 
-    public IReadOnlyList<ResolveMatch> Resolve(string query) => _store.Resolve(NormalizeQueryInput(query));
+    public IReadOnlyList<ResolveMatch> Resolve(string query) => _store.Resolve(MakeProjectRelativeIfInsideRoot(NormalizeQueryInput(query)));
 
     /// <summary>
     /// True when <paramref name="query"/> is a well-formed 32-hex guid. Lets `resolve` tell
@@ -1721,11 +1774,8 @@ public sealed class UnBrambleEngine : IDisposable
     public IReadOnlyList<RootMapping> GetRoots() => _store.GetRoots();
 
     /// <summary>Resolves a who-uses/uses target argument. See <see cref="UnBrambleStore.ResolveQueryTarget"/>.
-    /// Accepts an ABSOLUTE path inside the project too (real-project validation passed
-    /// `D:/…/&lt;project&gt;/Assets/Editor/X.cs` and got "no match" against the store's
-    /// project-relative paths): a fully-qualified input under <see cref="ProjectRoot"/> is
-    /// rewritten to the store's project-relative forward-slash form before resolution; anything
-    /// else passes through unchanged.</summary>
+    /// Absolute paths inside the project or a persisted scan root are rewritten to the store's
+    /// project-relative forward-slash form before resolution.</summary>
     public TargetResolution ResolveQueryTarget(string input) => _store.ResolveQueryTarget(MakeProjectRelativeIfInsideRoot(NormalizeQueryInput(input)));
 
     /// <summary>CLI paths are documented and stored with forward slashes, but Windows callers
@@ -1751,6 +1801,14 @@ public sealed class UnBrambleEngine : IDisposable
         }
 
         var root = Path.TrimEndingDirectorySeparator(ProjectRoot);
+        foreach (var mapping in _store.GetRoots().OrderByDescending(r => r.RealPath.Length))
+        {
+            var realRoot = Path.TrimEndingDirectorySeparator(mapping.RealPath);
+            if (full.StartsWith(realRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                return mapping.ProjectPrefix + "/" + full[(realRoot.Length + 1)..].Replace(Path.DirectorySeparatorChar, '/');
+            }
+        }
         if (!full.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
         {
             return input;

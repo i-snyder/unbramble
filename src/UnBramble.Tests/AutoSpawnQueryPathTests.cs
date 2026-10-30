@@ -1,3 +1,6 @@
+using System.Reflection;
+using System.Text.Json;
+using UnBramble.Cli;
 using UnBramble.Core.Config;
 using UnBramble.Core.Freshness;
 using UnBramble.Tests.TestSupport;
@@ -5,15 +8,13 @@ using UnBramble.Tests.TestSupport;
 namespace UnBramble.Tests;
 
 /// <summary>
-/// CLI-level coverage that a query verb's freshness preamble (<c>Program.PrintFreshness</c> ->
-/// <c>Program.MaybeAutoSpawnWatch</c>, docs/architecture.md "Auto-spawn watcher") actually
-/// invokes the spawn-attempt DECISION when the heartbeat was stale/absent -- verified via the
-/// crash-loop-guard marker file it writes (<see cref="AutoWatchMarkers.RecordSpawnAttempt"/>),
+/// CLI-level coverage that a successful query schedules an automatic watcher only after its
+/// output and read lease finish, when the heartbeat was stale/absent. Verified via an injected
+/// observer and the crash-loop-guard marker (<see cref="AutoWatchMarkers.RecordSpawnAttempt"/>),
 /// not via a real spawned process: this whole test process runs with
-/// <c>UNBRAMBLE_DISABLE_AUTO_SPAWN=1</c> (see <see cref="AutoSpawnTestGuard"/>), which stops
-/// <c>Program.MaybeAutoSpawnWatch</c> right before the actual <see
-/// cref="System.Diagnostics.Process.Start(System.Diagnostics.ProcessStartInfo)"/> call -- after
-/// it has already made and recorded its decision. The decision LOGIC itself
+/// <c>UNBRAMBLE_DISABLE_AUTO_SPAWN=1</c> (see <see cref="AutoSpawnTestGuard"/>), which skips
+/// the actual process launch after the deferred decision is recorded. The injected observer
+/// replaces the launch entirely in lifecycle tests. The decision logic itself
 /// (<see cref="AutoSpawnPolicy"/>) has its own direct unit tests; this file only exercises that
 /// the CLI's query path actually reaches it.
 /// </summary>
@@ -21,6 +22,86 @@ public class AutoSpawnQueryPathTests
 {
     private static string SpawnAttemptMarkerPath(string root) =>
         UnBramblePaths.RelativeTo(root, UnBramblePaths.SpawnAttemptRelativePath);
+
+    [Fact]
+    public void Cli_Resolve_AutoSpawnWaitsForCompleteOutputAndReleasedReadLease()
+    {
+        using var fixture = FixtureCopy.Create();
+        Assert.Equal(0, CliRunner.Run("init", "-p", fixture.Root).ExitCode);
+        var spawnCalls = 0;
+        var writerWasAvailable = false;
+        string? outputAtSpawn = null;
+
+        var result = RunWithSpawnObserver((root, output) =>
+        {
+            spawnCalls++;
+            outputAtSpawn = output;
+            using var writer = IndexWriterLock.TryAcquire(root);
+            writerWasAvailable = writer is not null;
+        }, "resolve", "Assets/Scripts/Foo.cs", "-p", fixture.Root, "--json");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(1, spawnCalls);
+        Assert.True(writerWasAvailable, "automatic watcher startup ran while its launching query still held the index read lease");
+        Assert.Equal(result.StdOut, outputAtSpawn);
+        using var answer = JsonDocument.Parse(outputAtSpawn!);
+        Assert.NotNull(AutoWatchMarkers.TryReadLastSpawnAttempt(fixture.Root));
+    }
+
+    [Fact]
+    public void Cli_FailedLookup_DiscardsPendingAutoSpawnWithoutLeakingIntoNextInvocation()
+    {
+        using var fixture = FixtureCopy.Create();
+        Assert.Equal(0, CliRunner.Run("init", "-p", fixture.Root).ExitCode);
+        var spawnCalls = 0;
+
+        var failed = RunWithSpawnObserver((_, _) => spawnCalls++,
+            "resolve", "NoSuchAsset_4f29", "-p", fixture.Root);
+        var next = RunWithSpawnObserver((_, _) => spawnCalls++, "--version");
+
+        Assert.Equal(2, failed.ExitCode);
+        Assert.Equal(0, next.ExitCode);
+        Assert.Equal(0, spawnCalls);
+        Assert.False(File.Exists(SpawnAttemptMarkerPath(fixture.Root)));
+    }
+
+    [Fact]
+    public void Cli_FindingsGate_IsACompletedQueryAndDefersAutoSpawn()
+    {
+        using var fixture = FixtureCopy.Create();
+        Assert.Equal(0, CliRunner.Run("init", "-p", fixture.Root).ExitCode);
+        var spawnCalls = 0;
+        var writerWasAvailable = false;
+
+        var result = RunWithSpawnObserver((root, _) =>
+        {
+            spawnCalls++;
+            using var writer = IndexWriterLock.TryAcquire(root);
+            writerWasAvailable = writer is not null;
+        }, "uses", "Assets/Scenes/Level.unity", "-p", fixture.Root, "--missing-only", "--fail-if-found", "--json");
+
+        Assert.Equal(3, result.ExitCode);
+        Assert.Equal(1, spawnCalls);
+        Assert.True(writerWasAvailable);
+    }
+
+    [Fact]
+    public void Cli_AutoSpawnFailure_DoesNotChangeCompletedQueryResult()
+    {
+        using var fixture = FixtureCopy.Create();
+        Assert.Equal(0, CliRunner.Run("init", "-p", fixture.Root).ExitCode);
+        var spawnCalls = 0;
+
+        var result = RunWithSpawnObserver((_, _) =>
+        {
+            spawnCalls++;
+            throw new InvalidOperationException("simulated background launch failure");
+        }, "resolve", "Assets/Scripts/Foo.cs", "-p", fixture.Root, "--json");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(1, spawnCalls);
+        using var answer = JsonDocument.Parse(result.StdOut);
+    }
 
     [Fact]
     public void MonitorStartup_AlwaysRecordsAndTouchesBeforeSpawningWorker()
@@ -102,5 +183,30 @@ public class AutoSpawnQueryPathTests
         var secondAttempt = AutoWatchMarkers.TryReadLastSpawnAttempt(fixture.Root);
 
         Assert.Equal(firstAttempt, secondAttempt);
+    }
+
+    private static (int ExitCode, string StdOut, string StdErr) RunWithSpawnObserver(Action<string, string> observeSpawn, params string[] args)
+    {
+        lock (ConsoleTestLock.Gate)
+        {
+            var originalOut = Console.Out;
+            var originalErr = Console.Error;
+            using var stdOut = new StringWriter();
+            using var stdErr = new StringWriter();
+            Console.SetOut(stdOut);
+            Console.SetError(stdErr);
+            try
+            {
+                Action<string> observer = root => observeSpawn(root, stdOut.ToString());
+                var method = typeof(Program).GetMethod("RunWithDeferredWatcherStart", BindingFlags.NonPublic | BindingFlags.Static)!;
+                var exitCode = (int)method.Invoke(null, [args, observer])!;
+                return (exitCode, stdOut.ToString(), stdErr.ToString());
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+                Console.SetError(originalErr);
+            }
+        }
     }
 }

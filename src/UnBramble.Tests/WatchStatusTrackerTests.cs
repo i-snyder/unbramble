@@ -90,6 +90,35 @@ public class WatchStatusTrackerTests
     }
 
     [Fact]
+    public void IndexPhases_PersistWaitsImmediatelyAndAdvanceToRealWorkWithoutChangingActivity()
+    {
+        using var fixture = FixtureCopy.Create();
+        var tracker = NewTracker(fixture.Root, writeToDisk: true);
+        tracker.OnWatcherEvent(WatcherEvent.PromotionCatchupSweepStarted);
+
+        tracker.OnDiagnosticLine("[watch-index] index: waiting for active queries to finish before updating the database");
+
+        var waiting = WatchStatusFile.TryRead(fixture.Root)!;
+        Assert.Equal(WatchActivityState.Processing, waiting.State);
+        Assert.Equal("initial-index", waiting.Current!.Kind);
+        Assert.Equal("waiting for active queries", waiting.Current.Phase);
+        Assert.Contains("active queries", waiting.Current.Detail, StringComparison.Ordinal);
+        Assert.Equal(WatchTotals.Empty, waiting.Totals);
+
+        tracker.OnDiagnosticLine("[scan-progress] dirs=2 files=10 current=Assets");
+        Assert.Equal("scanning", tracker.Snapshot().Current!.Phase);
+        tracker.OnDiagnosticLine("[watch-index] scan complete (10 entries); applying inventory diff");
+        Assert.Equal("updating inventory", WatchStatusFile.TryRead(fixture.Root)!.Current!.Phase);
+        tracker.OnDiagnosticLine("[watch-index] parsing 2 changed files for references");
+        Assert.Equal("parsing references", WatchStatusFile.TryRead(fixture.Root)!.Current!.Phase);
+        tracker.OnDiagnosticLine("[watch-index] running C# analysis");
+        var analyzing = WatchStatusFile.TryRead(fixture.Root)!;
+        Assert.Equal("C# analysis", analyzing.Current!.Phase);
+        Assert.Equal("initial-index", analyzing.Current.Kind);
+        Assert.Equal(waiting.Current.StartedUtc, analyzing.Current.StartedUtc);
+    }
+
+    [Fact]
     public void DiscoveryLineWithUnits_ThenExtractLines_RendersUnitKOfN()
     {
         using var fixture = FixtureCopy.Create();

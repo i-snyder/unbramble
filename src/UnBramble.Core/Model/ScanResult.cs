@@ -5,7 +5,8 @@ public sealed record ScanResult(
     IReadOnlyList<RootMapping> Roots,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<ScanRootStat>? RootStats = null,
-    IReadOnlyList<SlowDirEntry>? SlowDirs = null)
+    IReadOnlyList<SlowDirEntry>? SlowDirs = null,
+    string? LocalPackageRootsFingerprint = null)
 {
     /// <summary>Per top-level scan root (an ordinary configured root, the identity-only
     /// Library/PackageCache root, or a root-level reparse-point/junction target), one entry

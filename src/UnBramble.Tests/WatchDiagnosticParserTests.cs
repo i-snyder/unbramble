@@ -13,6 +13,21 @@ namespace UnBramble.Tests;
 /// </summary>
 public class WatchDiagnosticParserTests
 {
+    [Theory]
+    [InlineData("index: another unbramble process is updating the database -- waiting for its committed result", "waiting for index writer")]
+    [InlineData("index: waiting for active queries to finish before updating the database", "waiting for active queries")]
+    [InlineData("scanning project inventory", "scanning")]
+    [InlineData("scan complete (42 entries); applying inventory diff", "updating inventory")]
+    [InlineData("parsing 3 changed files for references", "parsing references")]
+    [InlineData("running C# analysis", "C# analysis")]
+    [InlineData("scan roots changed; rebuilding identities and references", "rebuilding index")]
+    public void TryParseIndexPhase_NamesTheWorkAndPreservesTheExplanation(string detail, string expectedPhase)
+    {
+        Assert.True(WatchDiagnosticParser.TryParseIndexPhase("[watch-index] " + detail, out var phase));
+        Assert.Equal(expectedPhase, phase.Phase);
+        Assert.Equal(detail, phase.Detail);
+    }
+
     [Fact]
     public void TryParseCsCacheStep_BuildIncremental_ParsesUnitPhaseDetailAndMs()
     {
@@ -195,6 +210,7 @@ public class WatchDiagnosticParserTests
         Assert.False(WatchDiagnosticParser.TryParseSummary(line, out _));
         Assert.False(WatchDiagnosticParser.TryParseDebounceFired(line, out _));
         Assert.False(WatchDiagnosticParser.TryParseScanProgress(line, out _));
+        Assert.False(WatchDiagnosticParser.TryParseIndexPhase(line, out _));
         Assert.False(WatchDiagnosticParser.IsResyncStarting(line));
     }
 }

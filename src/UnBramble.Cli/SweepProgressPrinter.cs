@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using UnBramble.Core.Scanning;
 
@@ -28,7 +27,8 @@ namespace UnBramble.Cli;
 /// for <see cref="KeepaliveSilence"/>: the post-scan phases (diff apply, reparse, C# analysis)
 /// emit no per-item progress and can run for minutes, which on the first real cold index read
 /// as "done or stalled?" -- exactly the ambiguity this class exists to prevent. Dispose after
-/// the engine call returns to stop the keepalive.
+/// the engine call returns to stop the keepalive. Lock waits report elapsed waiting; a timer
+/// tick never proves that another process, or a silent indexing phase, is making progress.
 ///
 /// Thread-safety: scan progress arrives on a timer thread (see <c>ScanHeartbeat</c>), phase
 /// lines on the sweeping thread, keepalives on this class's own timer -- one gate serializes
@@ -50,16 +50,25 @@ internal sealed class SweepProgressPrinter : IDisposable
     private static readonly TimeSpan KeepaliveSilence = TimeSpan.FromSeconds(15);
 
     private readonly object _gate = new();
-    private readonly Stopwatch _sinceConstruction = Stopwatch.StartNew();
+    private readonly TimeProvider _timeProvider;
+    private readonly long _startedAt;
     private readonly TextWriter _writer;
     private readonly Timer _keepaliveTimer;
     private string? _pendingHeader;
     private string _currentActivity = "scanning";
+    private bool _waiting;
     private long _lastLineTicks;
     private bool _disposed;
 
     public SweepProgressPrinter(string? header, TextWriter? writer = null)
+        : this(header, writer, TimeProvider.System)
     {
+    }
+
+    public SweepProgressPrinter(string? header, TextWriter? writer, TimeProvider timeProvider)
+    {
+        _timeProvider = timeProvider;
+        _startedAt = timeProvider.GetTimestamp();
         _pendingHeader = header;
         _writer = writer ?? Console.Error;
         _keepaliveTimer = new Timer(_ => OnKeepaliveTick(), null, KeepaliveSilence, KeepaliveSilence);
@@ -69,12 +78,14 @@ internal sealed class SweepProgressPrinter : IDisposable
     {
         lock (_gate)
         {
-            if (_disposed || _sinceConstruction.Elapsed < QuietWindow)
+            _currentActivity = "scanning";
+            _waiting = false;
+            if (_disposed || Elapsed < QuietWindow)
             {
                 return;
             }
 
-            var elapsed = _sinceConstruction.Elapsed;
+            var elapsed = Elapsed;
             if (_lastLineTicks != 0 && elapsed.Ticks - _lastLineTicks < ProgressCadence.Ticks)
             {
                 return;
@@ -91,35 +102,37 @@ internal sealed class SweepProgressPrinter : IDisposable
             // The activity is remembered even inside the quiet window: a fast scan followed by a
             // slow silent phase must have the RIGHT label ready when the keepalive first speaks.
             _currentActivity = ExtractActivity(label);
+            _waiting = label.Contains("waiting", StringComparison.OrdinalIgnoreCase);
 
-            if (_disposed || _sinceConstruction.Elapsed < QuietWindow)
+            if (_disposed || Elapsed < QuietWindow)
             {
                 return;
             }
 
-            PrintLine($"sweep: {label} ({FormatElapsed(_sinceConstruction.Elapsed)} elapsed)");
+            PrintLine($"sweep: {label} ({FormatElapsed(Elapsed)} elapsed)");
         }
     }
 
     /// <summary>Speaks only when every other source has been silent for
-    /// <see cref="KeepaliveSilence"/> -- the "is it stalled?" reassurance for phases that emit
-    /// no per-item progress of their own.</summary>
+    /// <see cref="KeepaliveSilence"/>. Reports the current phase and elapsed time without
+    /// claiming progress that the timer can't observe.</summary>
     private void OnKeepaliveTick()
     {
         lock (_gate)
         {
-            if (_disposed || _sinceConstruction.Elapsed < QuietWindow)
+            if (_disposed || Elapsed < QuietWindow)
             {
                 return;
             }
 
-            var elapsed = _sinceConstruction.Elapsed;
+            var elapsed = Elapsed;
             if (_lastLineTicks != 0 && elapsed.Ticks - _lastLineTicks < KeepaliveSilence.Ticks)
             {
                 return;
             }
 
-            PrintLine($"sweep: still {_currentActivity} -- not stalled ({FormatElapsed(elapsed)} elapsed)");
+            var status = _waiting ? $"waiting -- {_currentActivity}" : $"still {_currentActivity}";
+            PrintLine($"sweep: {status} ({FormatElapsed(elapsed)} elapsed)");
         }
     }
 
@@ -151,6 +164,8 @@ internal sealed class SweepProgressPrinter : IDisposable
             ? elapsed.ToString(@"h\:mm\:ss", CultureInfo.InvariantCulture)
             : elapsed.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
 
+    private TimeSpan Elapsed => _timeProvider.GetElapsedTime(_startedAt);
+
     private void PrintLine(string text)
     {
         if (_pendingHeader is { } header)
@@ -160,6 +175,6 @@ internal sealed class SweepProgressPrinter : IDisposable
         }
 
         _writer.WriteLine(text);
-        _lastLineTicks = _sinceConstruction.Elapsed.Ticks;
+        _lastLineTicks = Elapsed.Ticks;
     }
 }

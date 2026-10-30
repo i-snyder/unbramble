@@ -70,7 +70,37 @@ public static class WatchDiagnosticParser
     /// </param>
     public readonly record struct AnalysisStep(string Phase, string Detail, double Ms, int? Units);
 
+    public readonly record struct IndexPhase(string Phase, string Detail);
+
     public readonly record struct Summary(string Kind, IReadOnlyList<PassStep> Steps, int? Added, int? Changed, int? Removed);
+
+    /// <summary>Boundary phases forwarded by WatcherHost, including waits before the
+    /// scanner starts. Preserve the engine's explanation while naming the actual work.</summary>
+    public static bool TryParseIndexPhase(string line, out IndexPhase phase)
+    {
+        const string prefix = "[watch-index] ";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal) || string.IsNullOrWhiteSpace(line[prefix.Length..]))
+        {
+            phase = default;
+            return false;
+        }
+
+        var detail = line[prefix.Length..];
+        var name = detail switch
+        {
+            _ when detail.StartsWith("index: waiting for active queries", StringComparison.Ordinal) => "waiting for active queries",
+            _ when detail.StartsWith("index: another unbramble process", StringComparison.Ordinal) => "waiting for index writer",
+            _ when detail.StartsWith("scan complete", StringComparison.Ordinal) => "updating inventory",
+            _ when detail.StartsWith("parsing ", StringComparison.Ordinal) => "parsing references",
+            "running C# analysis" => "C# analysis",
+            _ when detail.StartsWith("scan roots changed", StringComparison.Ordinal)
+                || detail.StartsWith("the previous index did not complete", StringComparison.Ordinal) => "rebuilding index",
+            "scanning project inventory" => "scanning",
+            _ => "indexing",
+        };
+        phase = new IndexPhase(name, detail);
+        return true;
+    }
 
     /// <summary>Per-unit cache/extract/db-scope step from an `EnableWatchCompilationCache` diagnostic line.</summary>
     public static bool TryParseCsCacheStep(string line, out UnitStep step)

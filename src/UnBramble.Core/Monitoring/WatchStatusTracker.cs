@@ -151,6 +151,12 @@ public sealed class WatchStatusTracker
     /// </summary>
     public void OnDiagnosticLine(string line)
     {
+        if (WatchDiagnosticParser.TryParseIndexPhase(line, out var indexPhase))
+        {
+            Mutate(() => AdvanceCurrentStep(unit: null, indexPhase.Phase, indexPhase.Detail), force: true);
+            return;
+        }
+
         if (WatchDiagnosticParser.TryParseDebounceFired(line, out var batchSize))
         {
             if (batchSize > 0)

@@ -1,14 +1,89 @@
 using System.Diagnostics;
+using UnBramble.Core;
 using UnBramble.Core.Config;
 using UnBramble.Core.Model;
 using UnBramble.Core.Scanning;
 using UnBramble.Core.Store;
+using UnBramble.Tests.TestSupport;
 
 namespace UnBramble.Tests;
 
 /// <summary>Section 6.5: junction-following, realpath dedupe, dangling links, roots persistence.</summary>
 public class JunctionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void IndexAndTargetedUpdate_JunctionFolderMeta_UsesJunctionSideWhileContentsUseTarget(bool nested)
+    {
+        using var temp = TempDir.Create();
+        var project = Path.Combine(temp.Root, "Project");
+        var assets = Path.Combine(project, "Assets");
+        var settings = Path.Combine(project, "ProjectSettings");
+        Directory.CreateDirectory(assets);
+        Directory.CreateDirectory(settings);
+        File.WriteAllText(Path.Combine(settings, "ProjectVersion.txt"), "m_EditorVersion: 6000.0.1f1\n");
+        File.WriteAllText(Path.Combine(settings, "EditorSettings.asset"), "EditorSettings:\n  m_SerializationMode: 2\n");
+
+        var external = Path.Combine(temp.Root, "ExternalTarget");
+        Directory.CreateDirectory(external);
+        var ownerParent = assets;
+        var projectPrefix = "Assets";
+        if (nested)
+        {
+            ownerParent = Path.Combine(temp.Root, "ExternalParent");
+            Directory.CreateDirectory(ownerParent);
+            CreateJunction(Path.Combine(assets, "Container"), ownerParent);
+            projectPrefix += "/Container";
+        }
+        var junction = Path.Combine(ownerParent, "Vendor");
+        CreateJunction(junction, external);
+        var folderPath = projectPrefix + "/Vendor";
+        var folderGuid = new string('1', 32);
+        var scriptGuid = new string('2', 32);
+        var firstTargetGuid = new string('3', 32);
+        var secondTargetGuid = new string('4', 32);
+
+        void WriteFolderMeta(string targetGuid) => File.WriteAllText(junction + ".meta",
+            $"fileFormatVersion: 2\nguid: {folderGuid}\nfolderAsset: yes\nDefaultImporter:\n  externalObjects:\n    target: {{fileID: 11400000, guid: {targetGuid}, type: 2}}\n");
+
+        WriteFolderMeta(firstTargetGuid);
+        foreach (var (name, guid) in new[] { ("First", firstTargetGuid), ("Second", secondTargetGuid) })
+        {
+            var asset = Path.Combine(assets, name + ".asset");
+            File.WriteAllText(asset, "%YAML 1.1\n--- !u!114 &1\nMonoBehaviour:\n  m_Name: Target\n");
+            File.WriteAllText(asset + ".meta", $"fileFormatVersion: 2\nguid: {guid}\n");
+        }
+        File.WriteAllText(Path.Combine(external, "ExternalComponent.cs"), "public class ExternalComponent { public void Activate() { } }");
+        File.WriteAllText(Path.Combine(external, "ExternalComponent.cs.meta"), $"fileFormatVersion: 2\nguid: {scriptGuid}\n");
+        Assert.False(File.Exists(external + ".meta"));
+
+        using var engine = UnBrambleEngine.Open(project);
+        engine.RunIndex(full: true);
+
+        var folder = engine.ResolveQueryTarget(folderPath).Target!;
+        var initialRef = Assert.Single(engine.Uses(folder, transitive: false, depthCap: 1).Results);
+        Assert.True(initialRef.Resolved);
+        Assert.Equal("Assets/First.asset", initialRef.TargetPath);
+        Assert.Equal(folderPath + "/ExternalComponent.cs", Assert.Single(engine.Resolve(scriptGuid)).Path);
+        Assert.NotNull(engine.ResolveCsSymbol("ExternalComponent.Activate").DocId);
+        var singleFolder = new Scanner().ScanSingleFile(project, folderPath, new UnBrambleConfig(), []);
+        Assert.NotNull(singleFolder);
+        Assert.Equal(FileKind.Folder, singleFolder.Kind);
+        Assert.Equal(folderGuid, singleFolder.Guid);
+
+        WriteFolderMeta(secondTargetGuid);
+        File.SetLastWriteTimeUtc(junction + ".meta", DateTime.UtcNow.AddSeconds(2));
+        engine.ApplyTargetedUpdate([folderPath]);
+
+        var updatedFolder = engine.ResolveQueryTarget(folderPath).Target!;
+        var updatedRef = Assert.Single(engine.Uses(updatedFolder, transitive: false, depthCap: 1).Results);
+        Assert.True(updatedRef.Resolved);
+        Assert.Equal("Assets/Second.asset", updatedRef.TargetPath);
+        Assert.Equal(folderGuid, Assert.Single(engine.Resolve(folderPath)).Guid);
+        Assert.Equal(folderPath + "/ExternalComponent.cs", Assert.Single(engine.Resolve(scriptGuid)).Path);
+    }
+
     [Fact]
     public void Scan_JunctionAndDirectPath_ToSameRealDirectory_ScansContentsOnce()
     {

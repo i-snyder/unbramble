@@ -612,6 +612,10 @@ public sealed class UnBrambleStore : IDisposable
     /// <summary>Publishes that every phase of the current index pass completed successfully.</summary>
     public void MarkIndexComplete() => SetMetaValue("index_complete", "1");
 
+    internal string? GetLocalPackageRootsFingerprint() => QueryMetaValue("local_package_roots_fingerprint");
+
+    internal void SetLocalPackageRootsFingerprint(string fingerprint) => SetMetaValue("local_package_roots_fingerprint", fingerprint);
+
     /// <summary>
     /// Diffs a fresh scan against the current files table and applies the minimal set of
     /// writes. Deletions are applied before insertions within the batch (renames otherwise

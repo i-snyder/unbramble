@@ -117,8 +117,12 @@ public sealed class WatcherHost : IDisposable
     private bool _buffering;
     private int _pendingFullResyncs;
     private bool _fullResyncRequired;
+    private bool _topologyResyncRequired; // Owned by _updateOperationGate.
 
     private List<(RootMapping Root, FileSystemWatcher Watcher)>? _watchers;
+    // Replaced atomically under the operation gate; callbacks only read this immutable,
+    // longest-real-root-first snapshot, never the mutable watcher list or the database.
+    private RootMapping[] _eventRoots = [];
     private Timer? _debounceTimer;
     private Timer? _heartbeatIdleTimer;
     private Timer? _selfHealTimer;
@@ -252,15 +256,20 @@ public sealed class WatcherHost : IDisposable
 
         // Stop the FileSystemWatchers first so no new FS event can arrive and re-arm the
         // debounce timer while the timers below are being torn down.
-        if (_watchers is { } watchers)
+        lock (_updateOperationGate)
         {
-            foreach (var (_, watcher) in watchers)
+            if (_watchers is { } watchers)
             {
-                watcher.EnableRaisingEvents = false;
-                watcher.Dispose();
+                foreach (var (_, watcher) in watchers)
+                {
+                    watcher.EnableRaisingEvents = false;
+                    watcher.Dispose();
+                }
+
+                _watchers = null;
             }
 
-            _watchers = null;
+            Volatile.Write(ref _eventRoots, []);
         }
 
         StopDebounceTimerAndWait();
@@ -392,13 +401,14 @@ public sealed class WatcherHost : IDisposable
                 _pendingPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             }
 
-            StartFileSystemWatchers();
+            RefreshFileSystemWatchers();
             _onEvent?.Invoke(WatcherEvent.PromotionBufferingStarted);
 
             _onEvent?.Invoke(WatcherEvent.PromotionCatchupSweepStarted);
             lock (_dbGate)
             {
-                _engine.RunIndex(full: false);
+                RunIndexWithDiagnostics();
+                ReconcileWatchersAndCatchUp();
             }
 
             _onEvent?.Invoke(WatcherEvent.PromotionCatchupSweepCompleted);
@@ -416,6 +426,7 @@ public sealed class WatcherHost : IDisposable
                 lock (_dbGate)
                 {
                     _engine.ApplyTargetedUpdate(buffered);
+                    ReconcileWatchersAndCatchUp();
                 }
             }
 
@@ -433,8 +444,30 @@ public sealed class WatcherHost : IDisposable
 
     // ---- FileSystemWatchers ---------------------------------------------------------------
 
-    private void StartFileSystemWatchers()
+    // Called while holding the update operation and database gates. A sweep can discover
+    // local package roots that weren't in the old persisted inventory. Start watching each
+    // new root, then sweep again before publishing freshness to cover its unwatched interval.
+    private void ReconcileWatchersAndCatchUp()
     {
+        while (RefreshFileSystemWatchers())
+        {
+            RunIndexWithDiagnostics();
+        }
+    }
+
+    private void RunIndexWithDiagnostics()
+    {
+        _onDiagnostic?.Invoke("[watch-index] scanning project inventory");
+        _engine.RunIndex(full: false, onPhase: phase => _onDiagnostic?.Invoke($"[watch-index] {phase}"));
+    }
+
+    private bool RefreshFileSystemWatchers()
+    {
+        if (_stopRequested)
+        {
+            return false;
+        }
+
         // One FSW per real root from the PERSISTED roots table (never recomputed — a
         // recomputed mapping could disagree with what the index actually stored), excluding
         // the identity-only Library/PackageCache root: it refreshes on sweep/explicit index
@@ -442,11 +475,21 @@ public sealed class WatcherHost : IDisposable
         var roots = _engine.GetRoots()
             .Where(r => !r.ProjectPrefix.Equals(Scanner.PackageCacheProjectPrefix, StringComparison.OrdinalIgnoreCase))
             .ToList();
+        Volatile.Write(ref _eventRoots, roots.OrderByDescending(root => root.RealPath.Length).ToArray());
 
-        var watchers = new List<(RootMapping, FileSystemWatcher)>(roots.Count);
+        var watchers = _watchers ??= [];
+        var catchUpRequired = false;
         foreach (var root in roots)
         {
             if (!Directory.Exists(root.RealPath))
+            {
+                // A root can disappear after the preceding scan. It must be removed by
+                // another sweep before this host can claim the inventory is current.
+                catchUpRequired = true;
+                continue;
+            }
+
+            if (watchers.Any(existing => SameRoot(existing.Root, root)))
             {
                 continue;
             }
@@ -470,20 +513,61 @@ public sealed class WatcherHost : IDisposable
             };
             watcher.Error += (_, e) => OnWatcherError(e.GetException());
 
-            watcher.EnableRaisingEvents = true;
+            try
+            {
+                watcher.EnableRaisingEvents = true;
+            }
+            catch
+            {
+                watcher.Dispose();
+                throw;
+            }
             watchers.Add((root, watcher));
+            catchUpRequired = true;
 
             _onDiagnostic?.Invoke($"[watch-fsw] watching root prefix={root.ProjectPrefix} realPath={root.RealPath}");
         }
 
-        _watchers = watchers;
+        // Add replacements before removing old roots so a retarget doesn't create a gap in
+        // event coverage beyond the one covered by the following catch-up sweep.
+        for (var i = watchers.Count - 1; i >= 0; i--)
+        {
+            var (root, watcher) = watchers[i];
+            if (!roots.Any(current => SameRoot(root, current)))
+            {
+                watcher.EnableRaisingEvents = false;
+                watcher.Dispose();
+                watchers.RemoveAt(i);
+            }
+        }
+
+        return catchUpRequired;
     }
+
+    private static bool SameRoot(RootMapping left, RootMapping right) =>
+        string.Equals(left.RealPath, right.RealPath, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(left.ProjectPrefix, right.ProjectPrefix, StringComparison.Ordinal);
 
     private void OnFsEvent(RootMapping root, string realFullPath, string eventKind)
     {
+        if (_stopRequested)
+        {
+            return;
+        }
+
         // Counts EVERY raw callback, before any accept/reject decision below -- see the field's
         // own doc comment for why a rejected event still counts as "activity happened."
         Interlocked.Increment(ref _fsActivitySinceLastSelfHeal);
+
+        var owner = Array.Find(Volatile.Read(ref _eventRoots),
+            candidate => TranslateToProjectPath(candidate, realFullPath) is not null);
+        if (owner is null || !SameRoot(owner, root))
+        {
+            // Recursive parent watchers also see changes under separately owned child
+            // roots. Only the most specific persisted root may translate such an event.
+            _onDiagnostic?.Invoke($"[watch-fsw] {eventKind} REJECTED (owned-by: {owner?.ProjectPrefix ?? "no current root"}) root={root.ProjectPrefix} raw={realFullPath}");
+            return;
+        }
 
         var projectPath = TranslateToProjectPath(root, realFullPath);
         if (projectPath is null)
@@ -545,7 +629,11 @@ public sealed class WatcherHost : IDisposable
             return null;
         }
 
-        if (!normalizedFull.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+        var rootPrefix = Path.EndsInDirectorySeparator(normalizedRoot)
+            ? normalizedRoot
+            : normalizedRoot + Path.DirectorySeparatorChar;
+        if (!normalizedFull.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+            && !normalizedFull.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
         {
             return null;
         }
@@ -639,6 +727,7 @@ public sealed class WatcherHost : IDisposable
             lock (_dbGate)
             {
                 _engine.ApplyTargetedUpdate(batch);
+                ReconcileWatchersAndCatchUp();
             }
         }
         catch (Exception ex)
@@ -754,14 +843,69 @@ public sealed class WatcherHost : IDisposable
     // WatchStatusTracker.LastUpdatedUtc from freezing while idle.
     private void StartHeartbeatIdleTimer() =>
         _heartbeatIdleTimer = new Timer(
-            _ =>
-            {
-                WriteHeartbeat();
-                _onEvent?.Invoke(WatcherEvent.HeartbeatIdle);
-            },
+            _ => OnHeartbeatIdleTick(),
             null,
             _options.HeartbeatIdleCadence,
             _options.HeartbeatIdleCadence);
+
+    private void OnHeartbeatIdleTick()
+    {
+        // A busy mutation already owns freshness. Don't queue timer callbacks behind a
+        // long scan: they consume pool workers the scan itself needs to finish.
+        if (!Monitor.TryEnter(_updateOperationGate))
+        {
+            return;
+        }
+
+        try
+        {
+            if (_stopRequested)
+            {
+                return;
+            }
+
+            bool topologyCurrent;
+            try
+            {
+                lock (_dbGate)
+                {
+                    topologyCurrent = _engine.IsLocalPackageTopologyCurrent();
+                }
+            }
+            catch (Exception ex)
+            {
+                // A disconnected drive or a locked manifest can't escape a timer callback
+                // or leave a previous heartbeat vouching for an unverified package set.
+                SuppressHeartbeat();
+                _topologyResyncRequired = true;
+                Interlocked.Exchange(ref _fsActivitySinceLastSelfHeal, 1);
+                _onDiagnostic?.Invoke($"[watch-fsw] local package topology check failed: {ex.GetType().Name}: {ex.Message}");
+                return;
+            }
+
+            if (topologyCurrent && !_topologyResyncRequired)
+            {
+                WriteHeartbeat();
+            }
+            else
+            {
+                // Link targets can change outside every watched tree, without a manifest
+                // edit or FSW event. Reconcile them before renewing the freshness claim.
+                _onDiagnostic?.Invoke("[watch-fsw] local package topology changed; resyncing roots");
+                _topologyResyncRequired = true;
+                if (RunFullResync())
+                {
+                    _topologyResyncRequired = false;
+                }
+            }
+
+            _onEvent?.Invoke(WatcherEvent.HeartbeatIdle);
+        }
+        finally
+        {
+            Monitor.Exit(_updateOperationGate);
+        }
+    }
 
     private void StartSelfHealTimer() =>
         _selfHealTimer = new Timer(_ => OnSelfHealTick(), null, _options.SelfHealSweepInterval, _options.SelfHealSweepInterval);
@@ -881,7 +1025,8 @@ public sealed class WatcherHost : IDisposable
             lock (_dbGate)
             {
                 _onDiagnostic?.Invoke("[watch-fsw] self-heal/error-resync sweep: acquired database gate");
-                _engine.RunIndex(full: false);
+                RunIndexWithDiagnostics();
+                ReconcileWatchersAndCatchUp();
             }
         }
         catch (Exception ex)

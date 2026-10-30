@@ -68,6 +68,55 @@ public class WatchStatusEndToEndTests
         }
     }
 
+    [Theory]
+    [InlineData(true, "waiting for index writer")]
+    [InlineData(false, "waiting for active queries")]
+    public async Task PromotionBlockedByIndexLease_PersistsTheActualWaitAndKeepsHeartbeatSuppressed(bool holdWriter, string expectedPhase)
+    {
+        using var fixture = FixtureCopy.Create();
+        using var engine = UnBrambleEngine.Open(fixture.Root);
+        engine.RunIndex(full: false);
+        var tracker = new WatchStatusTracker(fixture.Root, pid: 4242);
+        engine.EnableWatchCompilationCache(tracker.OnDiagnosticLine);
+        using var host = new WatcherHost(engine, FastOptions(), tracker.OnWatcherEvent, tracker.OnDiagnosticLine);
+        IDisposable? blocker = holdWriter
+            ? IndexWriterLock.Acquire(fixture.Root)
+            : IndexReadLock.Acquire(fixture.Root);
+        Task? starting = null;
+        try
+        {
+            starting = Task.Run(host.Start);
+            Poll.Until(() => WatchStatusFile.TryRead(fixture.Root)?.Current?.Phase == expectedPhase,
+                message: "the watcher never persisted the reason its startup index was waiting");
+
+            var waiting = WatchStatusFile.TryRead(fixture.Root)!;
+            Assert.Equal("initial-index", waiting.Current!.Kind);
+            Assert.Equal(WatchActivityState.Processing, waiting.State);
+            Assert.False(starting.IsCompleted);
+            Assert.Null(HeartbeatFile.TryRead(fixture.Root));
+
+            blocker.Dispose();
+            blocker = null;
+            await starting.WaitAsync(TimeSpan.FromSeconds(20));
+
+            Assert.True(host.IsActive);
+            var promoted = WatchStatusFile.TryRead(fixture.Root)!;
+            Assert.Equal(WatchActivityState.Watching, promoted.State);
+            Assert.Null(promoted.Current);
+            Assert.NotNull(HeartbeatFile.TryRead(fixture.Root));
+        }
+        finally
+        {
+            blocker?.Dispose();
+            if (starting is not null)
+            {
+                await starting.WaitAsync(TimeSpan.FromSeconds(20));
+            }
+
+            host.Stop();
+        }
+    }
+
     [Fact]
     public void RealEdit_ThroughWatcherHost_ProducesReadableStatusFileWithSensibleTotals()
     {

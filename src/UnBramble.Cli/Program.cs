@@ -19,6 +19,9 @@ namespace UnBramble.Cli;
 
 public static class Program
 {
+    [ThreadStatic]
+    private static DeferredWatcherStart? _deferredWatcherStart;
+
     private static readonly Dictionary<int, string> ClassNames = new()
     {
         [1] = "GameObject",
@@ -261,16 +264,39 @@ public static class Program
     /// than each verb: one pair of spacers per invocation, guaranteed balanced, with no verb able
     /// to forget one.
     /// </summary>
-    public static int Main(string[] args)
+    public static int Main(string[] args) => RunWithDeferredWatcherStart(args, spawnObserver: null);
+
+    /// <summary>One invocation owns its pending automatic start. The observer replaces only
+    /// that invocation's process launch in tests; explicit monitor startup stays immediate.</summary>
+    internal static int RunWithDeferredWatcherStart(string[] args, Action<string>? spawnObserver)
     {
-        WriteSpacer();
+        var previous = _deferredWatcherStart;
+        var deferred = new DeferredWatcherStart(spawnObserver);
+        _deferredWatcherStart = deferred;
         try
         {
-            return RunCommand(args);
+            WriteSpacer();
+            int exitCode;
+            try
+            {
+                exitCode = RunCommand(args);
+            }
+            finally
+            {
+                WriteSpacer();
+            }
+
+            // Every verb's using scope, including its engine/read lease and output, has
+            // finished. Findings exit 3 is a completed query with an explicit CI gate.
+            if (exitCode is 0 or 3)
+            {
+                deferred.TryStart();
+            }
+            return exitCode;
         }
         finally
         {
-            WriteSpacer();
+            _deferredWatcherStart = previous;
         }
     }
 
@@ -2710,7 +2736,7 @@ public static class Program
     /// <summary>
     /// Background watcher startup (docs/architecture.md): when <see
     /// cref="UnBrambleEngine.EnsureFresh"/> just had to run the inline sweep (no fresh heartbeat),
-    /// fire off a detached watcher worker so the NEXT query can skip the sweep instead.
+    /// schedule a detached watcher worker so the NEXT query can skip the sweep instead.
     /// Fire-and-forget in every sense that matters: never awaited, never blocks the CLI's exit,
     /// and every failure path here (disabled by config, crash-loop cooldown, spawn throws) is
     /// swallowed silently -- THIS query already got a correct answer from EnsureFresh's own
@@ -2720,19 +2746,53 @@ public static class Program
     /// </summary>
     private static void MaybeAutoSpawnWatch(UnBrambleEngine engine, FreshnessOutcome outcome)
     {
-        var now = DateTime.UtcNow;
-        var lastAttempt = AutoWatchMarkers.TryReadLastSpawnAttempt(engine.ProjectRoot);
-        if (!AutoSpawnPolicy.ShouldSpawn(outcome.SweepPerformed, engine.Config.Watch.AutoStart, lastAttempt, now, AutoSpawnPolicy.DefaultCooldown))
+        if (outcome.SweepPerformed && engine.Config.Watch.AutoStart)
         {
-            return;
+            _deferredWatcherStart?.Request(engine.ProjectRoot);
         }
+    }
 
-        // Recorded regardless of whether the actual process spawn below succeeds, is skipped by
-        // the test-only opt-out, or throws -- the crash-loop guard's whole point is bounding the
-        // ATTEMPT rate, not the success rate (see AutoSpawnPolicy's own doc comment).
-        AutoWatchMarkers.RecordSpawnAttempt(engine.ProjectRoot, now);
+    private sealed class DeferredWatcherStart(Action<string>? spawnObserver)
+    {
+        private string? _projectRoot;
 
-        SpawnDetachedWatcher(engine.ProjectRoot);
+        public void Request(string projectRoot) => _projectRoot = projectRoot;
+
+        public void TryStart()
+        {
+            var projectRoot = _projectRoot;
+            _projectRoot = null;
+            if (projectRoot is null)
+            {
+                return;
+            }
+
+            try
+            {
+                var now = DateTime.UtcNow;
+                var lastAttempt = AutoWatchMarkers.TryReadLastSpawnAttempt(projectRoot);
+                if (!AutoSpawnPolicy.ShouldSpawn(sweepPerformed: true, autoStartEnabled: true, lastAttempt, now, AutoSpawnPolicy.DefaultCooldown))
+                {
+                    return;
+                }
+
+                // Record the attempt at handoff, after the query released its read lease.
+                // The cooldown applies even if spawning is disabled by the test guard or fails.
+                AutoWatchMarkers.RecordSpawnAttempt(projectRoot, now);
+                if (spawnObserver is not null)
+                {
+                    spawnObserver(projectRoot);
+                }
+                else
+                {
+                    SpawnDetachedWatcher(projectRoot);
+                }
+            }
+            catch (Exception)
+            {
+                // A background-start failure can't change a completed query's answer or exit.
+            }
+        }
     }
 
     /// <summary>
