@@ -464,75 +464,93 @@ public static partial class SemanticCsExtractor
 
         public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
-            var isInvocationTarget = node.Parent is InvocationExpressionSyntax invocation && invocation.Expression == node;
-            if (!isInvocationTarget)
+            if (!IsInvocationTargetPosition(node))
             {
-                var info = model.GetSymbolInfo(node);
-                if (info.Symbol is IFieldSymbol or IPropertySymbol or IEventSymbol)
-                {
-                    var docId = info.Symbol.GetDocumentationCommentId();
-                    if (docId is not null)
-                    {
-                        refs.Add(new CsSymbolRefRow(fileId, _currentMember, docId, "member-access", LineOf(node), "semantic"));
-                    }
-                }
-                else if (info.Symbol is IMethodSymbol methodSymbol)
-                {
-                    // A resolved method symbol used OUTSIDE invocation position is a
-                    // method-group / delegate-conversion reference (`AddListener(Helper.Handle)`,
-                    // `Action f = Helper.Handle`, a qualified LINQ method group) — recorded as a
-                    // normal semantic call-kind ref so a file referenced only this way still has
-                    // an inbound edge. The BARE (unqualified) form of this same reference shape
-                    // (`using static Helper; ... Action f = Handle;`) is handled by
-                    // <see cref="VisitIdentifierName"/> below: every resolved IMethodSymbol
-                    // occurrence outside invocation position gets a ref, with no qualified-only
-                    // exemption.
-                    var docId = methodSymbol.GetDocumentationCommentId();
-                    if (docId is not null)
-                    {
-                        refs.Add(new CsSymbolRefRow(fileId, _currentMember, docId, "call", LineOf(node), "semantic"));
-                    }
-                }
+                AddMemberReference(node, node.Name, recordUnresolved: true);
             }
 
             base.VisitMemberAccessExpression(node);
         }
 
+        public override void VisitMemberBindingExpression(MemberBindingExpressionSyntax node)
+        {
+            if (!IsInvocationTargetPosition(node))
+            {
+                AddMemberReference(node, node.Name, recordUnresolved: true);
+            }
+
+            base.VisitMemberBindingExpression(node);
+        }
+
         /// <summary>
-        /// The qualified-form method-group capture above
-        /// (<see cref="VisitMemberAccessExpression"/>) only fires for `Type.Member` / `instance.
-        /// Member` forms. A BARE/unqualified method-group reference -- `using static Helper; ...
-        /// Action a = Handle;`, or a LINQ callback naming a method imported via `using static` --
-        /// is an <see cref="IdentifierNameSyntax"/>, never a <see cref="MemberAccessExpressionSyntax"/>,
-        /// and without this override would produce no ref row at all: a file referenced only
-        /// this way would have zero inbound edges and be indistinguishable from genuinely dead.
-        /// This mirrors the qualified-form logic exactly (same "resolved IMethodSymbol outside
-        /// invocation position" rule, same call-kind/semantic-confidence shape), guarded so it
-        /// never fires for an identifier already handled by one of the other two visitors: the
-        /// invocation target of a bare call (`Foo()` -- handled by <see cref="VisitInvocationExpression"/>)
-        /// and the `.Name` part of a qualified member access (`Helper.Handle` -- handled above)
-        /// are both excluded here to avoid double-counting the same token.
+        /// Bare member uses (including inherited/using-static events and method groups) are
+        /// identifiers rather than qualified accesses. Exclude invocation targets and qualified
+        /// member names, which their own visitors already handle, so every use is counted once.
         /// </summary>
         public override void VisitIdentifierName(IdentifierNameSyntax node)
         {
-            if (!IsQualifiedMemberAccessName(node) && !IsInvocationTargetPosition(node) &&
-                model.GetSymbolInfo(node).Symbol is IMethodSymbol methodSymbol)
+            if (!IsQualifiedMemberAccessName(node) && !IsInvocationTargetPosition(node))
             {
-                var docId = methodSymbol.GetDocumentationCommentId();
-                if (docId is not null)
-                {
-                    refs.Add(new CsSymbolRefRow(fileId, _currentMember, docId, "call", LineOf(node), "semantic"));
-                }
+                // Bare events (including inherited or using-static events) are ordinary
+                // identifiers. An unresolved +=/-= target still provides a member name even
+                // when the missing base/assembly prevents Roslyn from finding any candidate.
+                AddMemberReference(node, node, recordUnresolved: IsSubscriptionTarget(node));
             }
 
             base.VisitIdentifierName(node);
         }
 
-        private static bool IsQualifiedMemberAccessName(IdentifierNameSyntax node) =>
-            node.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == node;
+        private void AddMemberReference(SyntaxNode node, SimpleNameSyntax name, bool recordUnresolved)
+        {
+            var info = model.GetSymbolInfo(node);
+            var refKind = info.Symbol switch
+            {
+                IFieldSymbol or IPropertySymbol or IEventSymbol => "member-access",
+                IMethodSymbol => "call", // A method group outside invocation position.
+                _ => null,
+            };
+            if (refKind is not null && info.Symbol!.GetDocumentationCommentId() is { } docId)
+            {
+                refs.Add(new CsSymbolRefRow(fileId, _currentMember, docId, refKind, LineOf(node), "semantic"));
+                return;
+            }
 
-        private static bool IsInvocationTargetPosition(IdentifierNameSyntax node) =>
+            // Types, namespaces, locals, and parameters aren't member references. A failed
+            // member lookup may expose several candidates, but choosing one would invent an
+            // exact target. U: cannot join a Roslyn declaration ID; its terminal member name
+            // remains available to speculative queries and the unresolved-name liveness screen.
+            if (info.Symbol is not null ||
+                (!recordUnresolved && !info.CandidateSymbols.Any(IsMemberSymbol)))
+            {
+                return;
+            }
+
+            var unresolvedKind = info.CandidateSymbols.Length > 0 && info.CandidateSymbols.All(s => s is IMethodSymbol)
+                ? "call"
+                : "member-access";
+            refs.Add(new CsSymbolRefRow(fileId, _currentMember, $"U:{name.Identifier.ValueText}", unresolvedKind, LineOf(node), "syntactic"));
+        }
+
+        private static bool IsMemberSymbol(ISymbol symbol) =>
+            symbol is IFieldSymbol or IPropertySymbol or IEventSymbol or IMethodSymbol;
+
+        private static bool IsQualifiedMemberAccessName(IdentifierNameSyntax node) =>
+            node.Parent is MemberAccessExpressionSyntax memberAccess && memberAccess.Name == node ||
+            node.Parent is MemberBindingExpressionSyntax memberBinding && memberBinding.Name == node;
+
+        private static bool IsInvocationTargetPosition(SyntaxNode node) =>
             node.Parent is InvocationExpressionSyntax invocation && invocation.Expression == node;
+
+        private static bool IsSubscriptionTarget(SyntaxNode node)
+        {
+            while (node.Parent is ParenthesizedExpressionSyntax parenthesized)
+            {
+                node = parenthesized;
+            }
+
+            return node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node &&
+                (assignment.IsKind(SyntaxKind.AddAssignmentExpression) || assignment.IsKind(SyntaxKind.SubtractAssignmentExpression));
+        }
 
         public override void VisitTypeOfExpression(TypeOfExpressionSyntax node)
         {

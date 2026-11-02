@@ -20,7 +20,7 @@ Don't publish proprietary project content when recording or reporting results. F
 <path-to>\unbramble.exe stats <path-to-unity-project>
 ```
 
-Confirm file and edge counts look plausible and every C# assembly reports semantic mode. If a cold index is unexpectedly slow, check `unbramble defender status` and `.unbramble/index-history.log` before assuming Roslyn is responsible.
+Confirm file and edge counts look plausible, every C# assembly reports semantic mode, and `stats --json` reports no `bindingFailures`. Semantic mode alone doesn't establish complete binding. If a cold index is unexpectedly slow, check `unbramble defender status` and `.unbramble/index-history.log` before assuming Roslyn is responsible.
 
 ### 2. Compare GUID references with ripgrep
 

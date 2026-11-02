@@ -916,6 +916,11 @@ public static class Program
                 FormatSyntacticAssemblyList(syntacticDetails.Count, syntacticDetails)));
         }
 
+        foreach (var failure in engine.GetCsBindingFailures())
+        {
+            rows.Add(($"Incomplete C# binding: {failure.AssemblyName}", $"{FormatCount(failure.ErrorCount)} compiler errors [{failure.ErrorCodes}]; regenerate project files or fix compilation errors, then re-index"));
+        }
+
         rows.Add(("DB", $"{engine.DbPath} ({FormatBytes(stats.DbSizeBytes)}, schema v{stats.SchemaVersion})"));
         WriteLabeledRows(rows, ansi);
 
@@ -1348,7 +1353,7 @@ public static class Program
 
         return answer with
         {
-            BlindSpots = [.. answer.BlindSpots.Where(spot => spot is not BlindSpots.SyntacticAssembliesPresent and not BlindSpots.CsprojStale and not BlindSpots.DisabledRegionRefsPossible)],
+            BlindSpots = [.. answer.BlindSpots.Where(spot => spot is not BlindSpots.SyntacticAssembliesPresent and not BlindSpots.CsprojStale and not BlindSpots.DisabledRegionRefsPossible and not BlindSpots.CsBindingIncomplete and not BlindSpots.PackageCacheCallersPossible)],
             SyntacticAssemblies = null,
             PossibleFalseNegative = false,
         };
@@ -2187,6 +2192,16 @@ public static class Program
         var confidencePart = answer.Confidence is not null ? $"answer confidence: {answer.Confidence}; " : "";
         WriteParagraph(AnsiStyle.Muted($"({confidencePart}blind spots: {string.Join(", ", answer.BlindSpots)})", ansi));
 
+        if (answer.BlindSpots.Contains(BlindSpots.CsBindingIncomplete))
+        {
+            WriteParagraph(AnsiStyle.Caution("C# binding is incomplete; references may be missing. `unbramble stats --json` lists affected assemblies and compiler error codes.", ansi));
+        }
+
+        if (answer.BlindSpots.Contains(BlindSpots.PackageCacheCallersPossible))
+        {
+            WriteParagraph(AnsiStyle.Caution("This code extends a package assembly; package-internal callers aren't indexed, so an empty result doesn't establish that it's unused.", ansi));
+        }
+
         if (answer.SyntacticAssemblies is { } summary)
         {
             var detailPointer = showDiagnoses
@@ -2204,7 +2219,7 @@ public static class Program
         // of the "0 direct referencers" it exists to contradict, behind findings about assemblies
         // the query never mentioned -- which is precisely the reading ("nothing references this")
         // that it's supposed to prevent.
-        if (answer.PossibleFalseNegative)
+        if (answer.PossibleFalseNegative && answer.SyntacticAssemblies is not null)
         {
             var count = answer.SyntacticAssemblies?.Total ?? 0;
             WriteSpacer();
@@ -3272,6 +3287,7 @@ public static class Program
             SyntacticAssemblies = syntactic.Count == 0
                 ? null
                 : [.. syntactic.Select(d => new SyntacticAssemblyJson { Name = d.Name, Reason = d.Reason })],
+            BindingFailures = [.. engine.GetCsBindingFailures().Select(f => new CsBindingFailureJson { Assembly = f.AssemblyName, ErrorCount = f.ErrorCount, ErrorCodes = f.ErrorCodes })],
         };
         Console.WriteLine(JsonSerializer.Serialize(payload, CliJsonContext.Default.StatsResultJson));
     }
@@ -3426,6 +3442,7 @@ public static class Program
         TotalAssemblies = cs.TotalAssemblies,
         SyntacticAssemblies = cs.SyntacticAssemblies,
         NameHints = cs.NameHints,
+        BindingIncompleteAssemblies = cs.BindingIncompleteAssemblies,
     };
 
     private static FileCountsJson ToFileCountsJson(KindCounts counts) => new()

@@ -117,6 +117,21 @@ public sealed class CsStatsJson
     /// <summary>The name_hints row count — a cheap smoke signal that the name-hint capture paths aren't silently broken.</summary>
     [JsonPropertyName("nameHints")]
     public int NameHints { get; init; }
+
+    [JsonPropertyName("bindingIncompleteAssemblies")]
+    public int BindingIncompleteAssemblies { get; init; }
+}
+
+public sealed class CsBindingFailureJson
+{
+    [JsonPropertyName("assembly")]
+    public required string Assembly { get; init; }
+
+    [JsonPropertyName("errorCount")]
+    public int ErrorCount { get; init; }
+
+    [JsonPropertyName("errorCodes")]
+    public string? ErrorCodes { get; init; }
 }
 
 public sealed class StatsResultJson
@@ -160,6 +175,9 @@ public sealed class StatsResultJson
     /// capped sample on a query answer; `stats` is the enumeration verb). Null when none.</summary>
     [JsonPropertyName("syntacticAssemblies")]
     public List<SyntacticAssemblyJson>? SyntacticAssemblies { get; init; }
+
+    [JsonPropertyName("bindingFailures")]
+    public List<CsBindingFailureJson>? BindingFailures { get; init; }
 }
 
 /// <summary>Per-phase wall-clock breakdown, seconds each.</summary>

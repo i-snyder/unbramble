@@ -463,8 +463,8 @@ public class DeadCandidatesTests
         }
 
         // Delete the recorded-semantic assembly's generated csproj -- nothing else changes (no
-        // ProjectSettings/Assets file touched), so the generic freshness sweep has nothing to
-        // notice; only the dedicated csproj-freshness gate check can catch this.
+        // ProjectSettings/Assets file touched). The project fingerprint must force reanalysis
+        // and downgrade the assembly rather than retain semantic references from the old file.
         File.Delete(Path.Combine(fixture.Root, "Game.csproj"));
 
         using var engine = UnBrambleEngine.Open(fixture.Root);
@@ -472,9 +472,8 @@ public class DeadCandidatesTests
         var result = engine.RunDeadCandidates();
 
         Assert.False(result.Available);
-        Assert.Contains(
-            "liveness unavailable: generated csproj missing for a semantic-mode assembly — reopen the project in Unity (or your IDE while Unity is running) to resync it",
-            result.UnavailableReasons);
+        Assert.Contains(result.UnavailableReasons, reason => reason.Contains("syntactic-mode assembly present (Game)", StringComparison.Ordinal));
+        Assert.Contains(engine.GetSyntacticAssemblyDetails(), detail => detail.Name == "Game" && detail.Reason == "no-csproj");
     }
 
     private static void AssertNeverDead(DeadCandidatesResult result, string path)

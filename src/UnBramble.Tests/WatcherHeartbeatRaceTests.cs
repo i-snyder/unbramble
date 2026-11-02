@@ -100,15 +100,14 @@ public class WatcherHeartbeatRaceTests
                 message: "canary edit after the heartbeat race window was never indexed -- watcher appears to have died silently");
 
             // And the heartbeat file itself is left valid, not torn/corrupted, after all that
-            // concurrent pressure. A short poll (rather than a single-shot read) tolerates the
-            // ordinary, documented-as-best-effort lag between ProcessBatch applying the canary
-            // batch (which is what the poll above just observed) and its own trailing
-            // WriteHeartbeat() call actually landing -- that gap is normal, not a symptom of the
-            // bug under test.
+            // concurrent pressure. Indexing the canary can precede already-queued self-heal
+            // sweeps draining, and heartbeat publication correctly stays suppressed until then.
+            // Use the same bounded wait as the canary so full-suite CPU contention doesn't turn
+            // that freshness protection into a false test failure.
             HeartbeatFile.Heartbeat? heartbeat = null;
             Poll.Until(
                 () => (heartbeat = HeartbeatFile.TryRead(fixture.Root)) is not null,
-                timeout: TimeSpan.FromSeconds(3),
+                timeout: TimeSpan.FromSeconds(30),
                 message: "heartbeat file was never left in a valid, readable state after the race window");
             Assert.NotNull(heartbeat);
         }

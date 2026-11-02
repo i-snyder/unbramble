@@ -586,6 +586,13 @@ public sealed class UnBrambleEngine : IDisposable
         // data_version capture deliberately happens BEFORE LoadAllFiles (see SetUnits' param doc).
         var discoveryStopwatch = _watchCacheDiagnostics is null ? null : Stopwatch.StartNew();
         var dataVersion = _store.GetDataVersion();
+        if (_sessionModel.HasForeignChanges(dataVersion))
+        {
+            // Another engine may have indexed source edits before this watcher saw its
+            // queued events. Its diff can now be empty, so old cached trees aren't reusable.
+            _watchCompilationCache?.ClearUnits();
+        }
+
         var structureDirty = diff.Added != 0 || diff.Removed != 0 || diff.AnyGuidRebuild
             || dirtyPaths.Any(CsSessionModelCache.IsUnitStructurePath);
 
@@ -606,19 +613,55 @@ public sealed class UnBrambleEngine : IDisposable
             _watchCacheDiagnostics!($"[cs-analysis] discovery: {(discoveryReused ? "session-cache REUSED" : "rebuilt")} units={units.Count} elapsed_ms={discoveryStopwatch.ElapsedMilliseconds}");
         }
 
+        var currentUnitNames = units.Select(unit => unit.Name).ToArray();
+        _watchCompilationCache?.RemoveUnitsExcept(currentUnitNames);
+        _store.RemoveAssembliesExcept(currentUnitNames);
         if (units.Count == 0)
         {
             return [.. discoveryWarnings];
         }
 
+        // Generated ProjectReference entries are part of the source dependency graph, not
+        // merely compiler inputs. Resolve them before dirty propagation and dependency-level
+        // scheduling; adding them only inside BuildCompilation would race their publishers.
+        long modeSelectionTotalTicks = 0;
+        var modeByName = new ConcurrentDictionary<string, CsModeDecision>(StringComparer.Ordinal);
+        var sourceUnitNames = new HashSet<string>(currentUnitNames, StringComparer.Ordinal);
+        Parallel.ForEach(units, unit =>
+        {
+            var stopwatch = _watchCacheDiagnostics is null ? null : Stopwatch.StartNew();
+            var mode = _sessionModel.GetModeDecision(ProjectRoot, unit.Name);
+            modeByName[unit.Name] = mode with
+            {
+                IsPackageExtension = mode.IsPackageExtension || unit.AsmdefPath?.StartsWith("Library/PackageCache/", StringComparison.OrdinalIgnoreCase) == true,
+                ExternalProjectReferenceNames = mode.ExternalProjectReferenceNames?.Where(name => !sourceUnitNames.Contains(name)).ToList(),
+            };
+            if (stopwatch is not null)
+            {
+                Interlocked.Add(ref modeSelectionTotalTicks, stopwatch.ElapsedTicks);
+            }
+        });
+        units = units.Select(unit => AssemblyUnitDiscovery.WithProjectReferences(unit, modeByName[unit.Name])).ToList();
+
         var existingNames = new HashSet<string>(_store.GetAssemblyNames(), StringComparer.Ordinal);
+        var previousFingerprints = _store.GetAssemblyModeFingerprints().ToDictionary(fp => fp.Name, StringComparer.Ordinal);
         var dirtyPathSet = new HashSet<string>(dirtyPaths, StringComparer.OrdinalIgnoreCase);
+        var assemblyStructureChanged = dirtyPaths.Any(CsSessionModelCache.IsUnitStructurePath);
         var byName = units.ToDictionary(u => u.Name, StringComparer.Ordinal);
 
         var dirty = new HashSet<string>(StringComparer.Ordinal);
         foreach (var unit in units)
         {
             var touched = !existingNames.Contains(unit.Name)
+                || !previousFingerprints.TryGetValue(unit.Name, out var previousFingerprint)
+                || previousFingerprint.CsprojMtimeTicks != modeByName[unit.Name].CsprojMtimeTicks
+                || !string.Equals(previousFingerprint.ProjectReferenceInputs, modeByName[unit.Name].ProjectReferenceInputs, StringComparison.Ordinal)
+                // Removed paths no longer carry their old unit ownership. Rebind the full
+                // graph rather than leave callers or an old dependency surface unchanged.
+                || diff.RemovedCsRelevant
+                // Ownership can change without touching a script: an asmref may switch its
+                // target, or a new nested asmdef may take scripts from an existing owner.
+                || assemblyStructureChanged
                 || (unit.AsmdefPath is not null && dirtyPathSet.Contains(unit.AsmdefPath))
                 || unit.Scripts.Any(s => dirtyPathSet.Contains(s.Path));
             if (touched)
@@ -685,17 +728,6 @@ public sealed class UnBrambleEngine : IDisposable
             _watchCacheDiagnostics!($"[cs-analysis] ordering: levels={levels.Count} elapsed_ms={orderingStopwatch.ElapsedMilliseconds}");
         }
 
-        // Aggregated across every unit's mode-selection call below (Interlocked since units
-        // within a level run concurrently via Parallel.ForEach) -- NOT covered by either the
-        // per-unit cs-cache build/extract diagnostics (which only start timing AFTER mode
-        // selection has already run) or by discoveryStopwatch above (mode selection is per-UNIT,
-        // not part of file-inventory discovery). The pre-session-cache behavior
-        // (CsModeSelector.Determine XML-parsing every unit's FULL generated
-        // csproj, every unit, every pass) was a leading real-project cost; with the session model
-        // this now measures one stat per unit on the steady-state path and only pays the parse
-        // when a csproj actually moved.
-        long modeSelectionTotalTicks = 0;
-
         var compilationCache = new ConcurrentDictionary<string, Microsoft.CodeAnalysis.CSharp.CSharpCompilation>(StringComparer.Ordinal);
         // Shared across every BuildCompilation call in
         // this pass, so a DLL referenced by many assemblies (engine modules, common packages) is
@@ -730,19 +762,16 @@ public sealed class UnBrambleEngine : IDisposable
 
         void ProcessUnit(AssemblyUnit unit)
         {
-            var modeSelectionStopwatch = _watchCacheDiagnostics is null ? null : Stopwatch.StartNew();
-            // Session-cached: the full csproj XML parse
-            // only runs when the csproj's mtime/existence moved since the last pass -- otherwise
-            // this is one stat. See CsSessionModelCache.GetModeDecision.
-            var modeDecision = _sessionModel.GetModeDecision(ProjectRoot, unit.Name);
-            if (modeSelectionStopwatch is not null)
-            {
-                Interlocked.Add(ref modeSelectionTotalTicks, modeSelectionStopwatch.ElapsedTicks);
-            }
+            var modeDecision = modeByName[unit.Name];
 
-            fingerprintsBag.Add(new UnBrambleStore.AssemblyModeFingerprint(unit.Name, modeDecision.CsprojMtimeTicks));
+            fingerprintsBag.Add(new UnBrambleStore.AssemblyModeFingerprint(unit.Name, modeDecision.CsprojMtimeTicks, modeDecision.ProjectReferenceInputs));
             if (modeDecision.Mode == CsAnalysisMode.Syntactic)
             {
+                if (_watchCompilationCache?.RemoveUnit(unit.Name) == true)
+                {
+                    changedThisPass![unit.Name] = true;
+                }
+
                 syntacticNamesBag.Add(unit.Name);
                 if (unit.AsmdefPath is not null && Scanner.IsPackageSourcedPath(unit.AsmdefPath))
                 {
@@ -798,6 +827,7 @@ public sealed class UnBrambleEngine : IDisposable
 
                 if (dirty.Contains(unit.Name))
                 {
+                    var bindingHealth = CsCompilationHealth.Capture(compilation);
                     var scriptFileIds = unit.Scripts.Select(s => s.FileId).ToList();
                     var extractStopwatch = _watchCacheDiagnostics is null ? null : Stopwatch.StartNew();
 
@@ -807,7 +837,7 @@ public sealed class UnBrambleEngine : IDisposable
 
                     if (scoped is { } scopedAnalysis)
                     {
-                        analysesBag.Add(scopedAnalysis);
+                        analysesBag.Add(WithPackageExtensionHints(scopedAnalysis with { BindingErrorCount = bindingHealth.ErrorCount, BindingErrorCodes = bindingHealth.ErrorCodes }, modeDecision));
                     }
                     else
                     {
@@ -827,7 +857,9 @@ public sealed class UnBrambleEngine : IDisposable
                             _watchCacheDiagnostics!($"[cs-cache] {unit.Name} extract (full-unit): trees={fileIdByTree.Count} symbols={symbols.Count} elapsed_ms={extractStopwatch.ElapsedMilliseconds}");
                         }
 
-                        var fullAnalysis = new CsAssemblyAnalysis(unit.Name, unit.AsmdefFileId, CsAnalysisMode.Semantic, scriptFileIds, symbols, refs, nameHints);
+                        var fullAnalysis = new CsAssemblyAnalysis(unit.Name, unit.AsmdefFileId, CsAnalysisMode.Semantic, scriptFileIds, symbols, refs, nameHints,
+                            BindingErrorCount: bindingHealth.ErrorCount, BindingErrorCodes: bindingHealth.ErrorCodes);
+                        fullAnalysis = WithPackageExtensionHints(fullAnalysis, modeDecision);
 
                         // A FULL extraction
                         // (whatever forced it -- csproj-mtime/shape-hash full rebuild, dependency
@@ -856,7 +888,7 @@ public sealed class UnBrambleEngine : IDisposable
                 }
 
                 var scriptFileIds = unit.Scripts.Select(s => s.FileId).ToList();
-                analysesBag.Add(new CsAssemblyAnalysis(unit.Name, unit.AsmdefFileId, CsAnalysisMode.Syntactic, scriptFileIds, symbols, refs, nameHints, modeDecision.SyntacticReason));
+                analysesBag.Add(WithPackageExtensionHints(new CsAssemblyAnalysis(unit.Name, unit.AsmdefFileId, CsAnalysisMode.Syntactic, scriptFileIds, symbols, refs, nameHints, modeDecision.SyntacticReason), modeDecision));
             }
         }
 
@@ -977,6 +1009,7 @@ public sealed class UnBrambleEngine : IDisposable
         var buildStopwatch = _watchCacheDiagnostics is null ? null : Stopwatch.StartNew();
         var shapeHash = CsCompilationCache.ComputeUnitShapeHash(unit, modeDecision);
         var cached = watchCache.TryGetUnit(unit.Name);
+        var availableSourceDependencies = unit.References.Where(compilationCache.ContainsKey).ToHashSet(StringComparer.Ordinal);
 
         // Individually named (not just a bool) so the diagnostic below can say WHICH check
         // tripped -- "cache miss" (never built this process), a raw csproj-mtime move (which
@@ -990,7 +1023,9 @@ public sealed class UnBrambleEngine : IDisposable
                 ? $"csproj-mtime-changed(old={FormatTicks(cached.CsprojMtimeTicks)},new={FormatTicks(modeDecision.CsprojMtimeTicks)})"
                 : !string.Equals(cached.UnitShapeHash, shapeHash, StringComparison.Ordinal)
                     ? "shape-hash-changed"
-                    : null;
+                    : !availableSourceDependencies.SetEquals(cached.DepRefs.Keys)
+                        ? "source-dependencies-changed"
+                        : null;
 
         if (fullRebuildReason is not null)
         {
@@ -1015,7 +1050,7 @@ public sealed class UnBrambleEngine : IDisposable
 
         if (unitSelfDirty)
         {
-            var parseOptions = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: modeDecision.Defines);
+            var parseOptions = new CSharpParseOptions(modeDecision.LanguageVersion, preprocessorSymbols: modeDecision.Defines);
             var edited = CsCompilationCache.ApplyIncrementalEdits(current, unit, ToFullPath, parseOptions, dirtyPathSet);
             compilation = edited.Compilation;
             fileIdByTree = edited.FileIdByTree;
@@ -1023,7 +1058,8 @@ public sealed class UnBrambleEngine : IDisposable
             changed = true;
         }
 
-        var changedDeps = unit.References.Where(changedThisPass.ContainsKey).ToList();
+        var changedDeps = unit.References.Where(name => changedThisPass.ContainsKey(name)
+            || (depRefs.ContainsKey(name) && !compilationCache.ContainsKey(name))).ToList();
         if (changedDeps.Count > 0)
         {
             var (swapped, newDepRefs) = CsCompilationCache.ApplyDependencyReferenceSwaps(compilation, depRefs, changedDeps, compilationCache);
@@ -1048,6 +1084,25 @@ public sealed class UnBrambleEngine : IDisposable
     }
 
     private static string FormatTicks(long? ticks) => ticks?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null";
+
+    private static CsAssemblyAnalysis WithPackageExtensionHints(CsAssemblyAnalysis analysis, CsModeDecision mode)
+    {
+        if (!mode.IsPackageExtension)
+        {
+            return analysis;
+        }
+
+        var hints = analysis.NameHints.ToList();
+        foreach (var fileId in analysis.ScriptFileIds)
+        {
+            if (!hints.Any(hint => hint.SourceFileId == fileId && hint.Kind == "cs-package-extension"))
+            {
+                hints.Add(new CsNameHintRow(fileId, analysis.AssemblyName, "cs-package-extension", 1, null));
+            }
+        }
+
+        return analysis with { NameHints = hints };
+    }
 
     /// <summary>
     /// Attempts a per-file-scoped re-extraction of just <paramref name="unit"/>'s own dirty `.cs`
@@ -1217,15 +1272,13 @@ public sealed class UnBrambleEngine : IDisposable
         }
 
         var changedSet = new HashSet<long>(changedFileIds);
-        return new CsAssemblyAnalysis(
-            full.AssemblyName,
-            full.AsmdefFileId,
-            full.Mode,
-            changedFileIds,
-            [.. full.Symbols.Where(s => changedSet.Contains(s.FileId))],
-            [.. full.Refs.Where(r => changedSet.Contains(r.SourceFileId))],
-            [.. full.NameHints.Where(h => changedSet.Contains(h.SourceFileId))],
-            full.ModeReason);
+        return full with
+        {
+            ScriptFileIds = changedFileIds,
+            Symbols = [.. full.Symbols.Where(s => changedSet.Contains(s.FileId))],
+            Refs = [.. full.Refs.Where(r => changedSet.Contains(r.SourceFileId))],
+            NameHints = [.. full.NameHints.Where(h => changedSet.Contains(h.SourceFileId))],
+        };
     }
 
     /// <summary>
@@ -1297,19 +1350,20 @@ public sealed class UnBrambleEngine : IDisposable
     /// or a project with no C# assemblies ever discovered) always returns false: <see
     /// cref="RunCsAnalysis"/> must not skip on an unknown assembly set.
     /// </summary>
-    private bool CsAnalysisFingerprintsMatch()
+    private bool CsAnalysisFingerprintsMatch(bool allowEmpty = false)
     {
         var fingerprints = _store.GetAssemblyModeFingerprints();
         if (fingerprints.Count == 0)
         {
-            return false;
+            return allowEmpty;
         }
 
+        var capturedFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var fp in fingerprints)
         {
             var csprojPath = Path.Combine(ProjectRoot, fp.Name + ".csproj");
             long? currentMtimeTicks = File.Exists(csprojPath) ? File.GetLastWriteTimeUtc(csprojPath).Ticks : null;
-            if (currentMtimeTicks != fp.CsprojMtimeTicks)
+            if (currentMtimeTicks != fp.CsprojMtimeTicks || !CsProjectReferenceInputs.Matches(fp.ProjectReferenceInputs, capturedFiles))
             {
                 return false;
             }
@@ -1465,7 +1519,7 @@ public sealed class UnBrambleEngine : IDisposable
                 FileStream? queryLease = IndexReadLock.Acquire(ProjectRoot, onPhase);
                 try
                 {
-                    if (_store.IsIndexComplete() && IsLocalPackageTopologyCurrent())
+                    if (_store.IsIndexComplete() && IsLocalPackageTopologyCurrent() && CsAnalysisFingerprintsMatch(allowEmpty: true))
                     {
                         _queryLease = queryLease;
                         queryLease = null;
@@ -1522,6 +1576,14 @@ public sealed class UnBrambleEngine : IDisposable
             && _store.IsIndexComplete()
             && IsLocalPackageTopologyCurrent())
         {
+            if (!CsAnalysisFingerprintsMatch(allowEmpty: true))
+            {
+                // Generated projects and compiled package outputs can change outside the
+                // watched asset roots. An idle watcher heartbeat cannot vouch for those inputs.
+                watcherSnapshot.Dispose();
+                return RefreshChangedCsInputs(onScanProgress, onPhase, waitForConcurrentSweep);
+            }
+
             // Auto-spawn telemetry only (docs/architecture.md, "Auto-spawn watcher") -- this
             // marker plays no role in the freshness decision above (already made) or in any
             // future call's decision (which only ever reads the heartbeat file). It exists
@@ -1663,6 +1725,12 @@ public sealed class UnBrambleEngine : IDisposable
                     && _store.IsIndexComplete()
                     && IsLocalPackageTopologyCurrent())
                 {
+                    if (!CsAnalysisFingerprintsMatch(allowEmpty: true))
+                    {
+                        watcherSnapshot.Dispose();
+                        return RefreshChangedCsInputs(onScanProgress, onPhase, waitForConcurrentSweep: true);
+                    }
+
                     AutoWatchMarkers.TouchLastQuery(ProjectRoot, DateTime.UtcNow);
                     return FreshnessOutcome.SkippedFreshHeartbeat(DateTime.UtcNow - h.UtcTimestamp);
                 }
@@ -1684,6 +1752,31 @@ public sealed class UnBrambleEngine : IDisposable
     }
 
     private static readonly TimeSpan ConcurrentSweepPollInterval = TimeSpan.FromMilliseconds(250);
+
+    private FreshnessOutcome RefreshChangedCsInputs(Action<ScanProgress>? onScanProgress, Action<string>? onPhase, bool waitForConcurrentSweep)
+    {
+        onPhase?.Invoke("freshness: C# project inputs changed -- refreshing bindings before answering");
+        var writerLease = IndexWriterLock.TryAcquire(ProjectRoot);
+        if (writerLease is null)
+        {
+            if (!waitForConcurrentSweep)
+            {
+                return FreshnessOutcome.SkippedConcurrentSweep();
+            }
+
+            writerLease = IndexWriterLock.Acquire(ProjectRoot, onPhase);
+        }
+
+        using (writerLease)
+        {
+            if (_store.IsIndexComplete() && IsLocalPackageTopologyCurrent() && CsAnalysisFingerprintsMatch(allowEmpty: true))
+            {
+                return FreshnessOutcome.SkippedCompletedConcurrentUpdate();
+            }
+
+            return FreshnessOutcome.Swept(RunIndexOwned(full: false, onScanProgress, onPhase));
+        }
+    }
 
     /// <summary>External package links can change without events on the old target. Validate
     /// discovery before trusting a heartbeat; the watcher uses the same check to resync even
@@ -1736,6 +1829,8 @@ public sealed class UnBrambleEngine : IDisposable
     /// per-query sample.</summary>
     public IReadOnlyList<SyntacticAssemblyDetail> GetSyntacticAssemblyDetails() =>
         [.. _store.GetSyntacticAssemblyDetails().Select(EnrichSyntacticDetail)];
+
+    public IReadOnlyList<CsBindingFailure> GetCsBindingFailures() => _store.GetCsBindingFailures();
 
     /// <summary>
     /// Adds the two package-only diagnostics (see <see cref="SyntacticAssemblyDetail"/>'s own doc
@@ -1854,7 +1949,9 @@ public sealed class UnBrambleEngine : IDisposable
         var eventRefs = SymbolEventReferencers(docId);
         var anySyntactic = _store.GetCsStats().SyntacticAssemblies > 0;
         var blindSpots = BlindSpots.ForQuery(
-            anySyntactic, truncated: false, IsAnyCsprojStale(), _store.HasDisabledRegionNameHint(SimpleNameFromDocId(docId)));
+            anySyntactic, truncated: false, IsAnyCsprojStale(), _store.HasDisabledRegionNameHint(SimpleNameFromDocId(docId)),
+            csBindingIncomplete: _store.GetCsBindingFailures().Count > 0,
+            packageCacheCallersPossible: HasPackageExtensionHint(docId));
         var summary = anySyntactic ? BuildSyntacticSummary() : null;
         return new CsRefsAnswer(refs, eventRefs, blindSpots, summary);
     }
@@ -2019,9 +2116,8 @@ public sealed class UnBrambleEngine : IDisposable
             // Should not happen for a docId that just came out of ResolveCsSymbol, but never
             // crash on a stale/edge-case lookup -- degrade to the symbol-level section alone.
             var anySyntacticNoFile = _store.GetCsStats().SyntacticAssemblies > 0;
-            var speculativeNoFile = anySyntacticNoFile
-                ? _store.GetSyntacticNameMatchRefs(docId, SimpleNameFromDocId(docId), docId.StartsWith("T:", StringComparison.Ordinal), excludeSourceFileId: null)
-                : [];
+            var bindingIncomplete = _store.GetCsBindingFailures().Count > 0;
+            var speculativeNoFile = _store.GetSyntacticNameMatchRefs(docId, SimpleNameFromDocId(docId), docId.StartsWith("T:", StringComparison.Ordinal), excludeSourceFileId: null);
             var combinedNoFile = MergeSpeculative(symbolEdges, speculativeNoFile);
             var summaryNoFile = anySyntacticNoFile ? BuildSyntacticSummary() : null;
             return new QueryAnswer(
@@ -2029,9 +2125,9 @@ public sealed class UnBrambleEngine : IDisposable
                 EdgeConfidence.AnswerLevel(combinedNoFile),
                 BlindSpots.ForQuery(
                     anySyntacticNoFile, truncated: false, IsAnyCsprojStale(),
-                    _store.HasDisabledRegionNameHint(SimpleNameFromDocId(docId))),
+                    _store.HasDisabledRegionNameHint(SimpleNameFromDocId(docId)), csBindingIncomplete: bindingIncomplete),
                 summaryNoFile,
-                PossibleFalseNegative: HasNoNonSpeculativeResult(combinedNoFile) && summaryNoFile is not null);
+                PossibleFalseNegative: HasNoNonSpeculativeResult(combinedNoFile) && (summaryNoFile is not null || bindingIncomplete));
         }
 
         var fileTarget = new QueryTarget(info.FileId, info.FilePath, info.FileGuid);
@@ -2064,13 +2160,11 @@ public sealed class UnBrambleEngine : IDisposable
 
         // Speculative name-match fallback: a syntactic assembly's text-derived symbol_refs can
         // never join this docId directly (see GetSyntacticNameMatchRefs' doc comment), so a
-        // proven/advisory-only answer can silently omit real call sites. Runs whenever any
-        // syntactic assembly exists; purely additive after MergeSpeculative's dedup against what
+        // proven/advisory-only answer can silently omit real call sites. Semantic assemblies
+        // can also retain unresolved rows; purely additive after MergeSpeculative's dedup against what
         // the exact join already found.
         var isTypeQuery = info.Kind == "type";
-        var speculative = anySyntactic
-            ? _store.GetSyntacticNameMatchRefs(docId, info.Name, isTypeQuery, info.FileId)
-            : [];
+        var speculative = _store.GetSyntacticNameMatchRefs(docId, info.Name, isTypeQuery, info.FileId);
         combined = MergeSpeculative(combined, speculative);
 
         var answerConfidence = EdgeConfidence.AnswerLevel(combined);
@@ -2078,9 +2172,11 @@ public sealed class UnBrambleEngine : IDisposable
         // a symbol query has exactly one resolved symbol name to check, so this is the tight
         // check, not the file-declared-symbols fallback Finalize uses for plain file queries.
         var blindSpots = BlindSpots.ForQuery(
-            anySyntactic, fileAnswer.Truncated, IsAnyCsprojStale(), _store.HasDisabledRegionNameHint(info.Name));
+            anySyntactic, fileAnswer.Truncated, IsAnyCsprojStale(), _store.HasDisabledRegionNameHint(info.Name),
+            csBindingIncomplete: _store.GetCsBindingFailures().Count > 0,
+            packageCacheCallersPossible: _store.HasPackageExtensionHint(info.FileId));
         var summary = anySyntactic ? BuildSyntacticSummary() : null;
-        var possibleFalseNegative = HasNoNonSpeculativeResult(combined) && summary is not null;
+        var possibleFalseNegative = HasNoNonSpeculativeResult(combined) && (summary is not null || blindSpots.Contains(BlindSpots.CsBindingIncomplete) || blindSpots.Contains(BlindSpots.PackageCacheCallersPossible));
 
         return new QueryAnswer(fileTarget, combined, fileAnswer.Truncated, fileAnswer.TransitiveUnavailable, answerConfidence, blindSpots, summary, possibleFalseNegative);
     }
@@ -2194,9 +2290,11 @@ public sealed class UnBrambleEngine : IDisposable
             anySyntactic,
             truncated,
             csRelevant && IsAnyCsprojStale(),
-            csRelevant && HasDisabledRegionHint(target));
+            csRelevant && HasDisabledRegionHint(target),
+            csBindingIncomplete: csRelevant && _store.GetCsBindingFailures().Count > 0,
+            packageCacheCallersPossible: target.FileId is { } packageFileId && _store.HasPackageExtensionHint(packageFileId));
         var summary = anySyntactic ? BuildSyntacticSummary() : null;
-        var possibleFalseNegative = labeled.Count == 0 && summary is not null
+        var possibleFalseNegative = labeled.Count == 0 && (summary is not null || blindSpots.Contains(BlindSpots.CsBindingIncomplete) || blindSpots.Contains(BlindSpots.PackageCacheCallersPossible))
             && target.Path is not null && target.Path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase);
         return new QueryAnswer(target, labeled, truncated, transitiveUnavailable, confidence, blindSpots, summary, possibleFalseNegative);
     }
@@ -2222,6 +2320,9 @@ public sealed class UnBrambleEngine : IDisposable
 
         return _store.HasDisabledRegionNameHintForFile(fileId, target.Path);
     }
+
+    private bool HasPackageExtensionHint(string docId) =>
+        _store.GetSymbolInfo(docId) is { } info && _store.HasPackageExtensionHint(info.FileId);
 
     /// <summary>Extracts the simple (unqualified, unprefixed) name from a doc_id, e.g.
     /// "M:Foo.Jump" -&gt; "Jump", "T:Foo" -&gt; "Foo" -- the same basis disabled-region name_hints
@@ -2289,6 +2390,14 @@ public sealed class UnBrambleEngine : IDisposable
     public LivenessGateResult CheckLivenessGates()
     {
         var reasons = new List<string>();
+
+        var bindingFailures = _store.GetCsBindingFailures();
+        if (bindingFailures.Count > 0)
+        {
+            reasons.Add("liveness unavailable: incomplete C# binding (" +
+                string.Join("; ", bindingFailures.Select(f => $"{f.AssemblyName}: {f.ErrorCount} compiler errors [{f.ErrorCodes}]")) +
+                ") — fix compilation errors or regenerate Unity's .csproj files, then re-index");
+        }
 
         var syntacticNames = _store.GetSyntacticAssemblyNames();
         if (syntacticNames.Count > 0)
@@ -2595,6 +2704,9 @@ public sealed class UnBrambleEngine : IDisposable
         var callbackFileIds = _store.GetNameHintRows("cs-unity-callback")
             .Select(row => row.SourceFileId)
             .ToHashSet();
+        var packageExtensionFileIds = _store.GetNameHintRows("cs-package-extension")
+            .Select(row => row.SourceFileId)
+            .ToHashSet();
         var unresolvedPathRefRows = _store.GetUnresolvedPathRefRows();
         var unresolvedSymbolTrailingIdentifiers = _store.GetUnresolvedSymbolRefTrailingIdentifiers();
         var unmatchedEventRawNameRows = _store.GetUnmatchedEventRawNameRows();
@@ -2630,6 +2742,8 @@ public sealed class UnBrambleEngine : IDisposable
 
                 var reason = callbackFileIds.Contains(fileId)
                     ? ScreenReasons.UnityCallbackGuard
+                    : packageExtensionFileIds.Contains(fileId)
+                    ? ScreenReasons.PackageExtensionGuard
                     : ComputeScreenReason(
                         fileId, path, liveIds,
                         nameHintRows, disabledRegionRows, unresolvedPathRefRows,
@@ -2678,7 +2792,8 @@ public sealed class UnBrambleEngine : IDisposable
         // cs-disabled name_hints rows to keep a candidate off the proven-dead list outright --
         // this answer-level flag is who-uses/uses' substitute for not having that screen.
         var semanticAssemblyCount = _store.GetSemanticAssemblyNames().Count;
-        var blindSpots = BlindSpots.ForQuery(anySyntacticAssembly: false, truncated: false, csprojStale: false, disabledRegionNameHint: false);
+        var blindSpots = BlindSpots.ForQuery(anySyntacticAssembly: false, truncated: false, csprojStale: false, disabledRegionNameHint: false,
+            packageCacheCallersPossible: packageExtensionFileIds.Count > 0);
 
         return new DeadCandidatesResult(
             true, [], roots,

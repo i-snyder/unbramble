@@ -40,9 +40,10 @@ namespace UnBramble.Core.CSharp;
 /// <item><b>Mode decisions</b> are keyed per assembly on the generated csproj's current mtime
 /// ticks (or its absence), checked as a plain stat each pass — the same fingerprint basis
 /// the dirty-path skip gate and <see cref="CsCompilationCache"/>'s rebuild gate already use, so
-/// all three share one blind-spot family (an mtime-identical csproj rewrite) rather than adding
-/// a new one.
-/// A referenced DLL appearing on disk without its csproj mtime moving is picked up on the next
+    /// the primary project, referenced target projects and package output DLLs additionally
+    /// carry existence/mtime/size snapshots. Equal-mtime rewrites with different sizes refresh;
+    /// only a rewrite preserving both metadata fields remains indistinguishable by this stat check.
+    /// An ordinary HintPath DLL appearing on disk without its csproj mtime moving is picked up on the next
 /// csproj regeneration rather than immediately — same honest degradation as
 /// <c>BuildCompilation</c>'s existing stale-HintPath skip.</item>
 /// </list>
@@ -58,8 +59,13 @@ public sealed class CsSessionModelCache
     // harmlessly (bounded by the historical unit-name set of one process lifetime).
     private readonly ConcurrentDictionary<string, CsModeDecision> _modeByName = new(StringComparer.Ordinal);
 
+    public bool HasForeignChanges(long currentDataVersion) =>
+        _units is not null && currentDataVersion != _unitsDataVersion;
+
     /// <summary>True when a dirty path's CONTENT can change the unit graph itself (which units
-    /// exist, their references, their names) — `.asmdef`/`.asmref`. A dirty `.cs` is deliberately
+    /// exist, their discovered references, their names) — `.asmdef`/`.asmref`. Generated
+    /// ProjectReference edges are overlaid after discovery from mtime-keyed mode decisions.
+    /// A dirty `.cs` is deliberately
     /// NOT structure-relevant: an in-place content edit keeps its path, its file id, and therefore
     /// its unit assignment (adds/removes/renames/guid-rebuilds are separately covered by the diff
     /// counts and <see cref="Store.SweepDiff.AnyGuidRebuild"/>).</summary>
@@ -105,8 +111,8 @@ public sealed class CsSessionModelCache
     /// <summary>
     /// Mtime-gated wrapper around <see cref="CsModeSelector.Determine"/>: one
     /// <see cref="File.Exists(string)"/> + <see cref="File.GetLastWriteTimeUtc(string)"/> stat per
-    /// call; the full csproj XML parse only runs when the csproj's mtime (or existence) no longer
-    /// matches what the cached decision was computed from. The cached decision's OWN
+    /// call plus the referenced-input snapshot; the full csproj XML parse only runs when one
+    /// of those inputs no longer matches the cached decision. The cached decision's OWN
     /// <see cref="CsModeDecision.CsprojMtimeTicks"/> (captured inside Determine, not our stat) is
     /// what's compared, so a csproj rewritten between our stat and Determine's read self-corrects
     /// on the very next pass.
@@ -116,7 +122,8 @@ public sealed class CsSessionModelCache
         var csprojPath = Path.Combine(projectRoot, assemblyName + ".csproj");
         long? currentMtimeTicks = File.Exists(csprojPath) ? File.GetLastWriteTimeUtc(csprojPath).Ticks : null;
 
-        if (_modeByName.TryGetValue(assemblyName, out var cached) && cached.CsprojMtimeTicks == currentMtimeTicks)
+        if (_modeByName.TryGetValue(assemblyName, out var cached) && cached.CsprojMtimeTicks == currentMtimeTicks
+            && CsProjectReferenceInputs.Matches(cached.ProjectReferenceInputs))
         {
             return cached;
         }

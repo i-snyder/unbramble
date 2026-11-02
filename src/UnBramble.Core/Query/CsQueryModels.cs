@@ -44,7 +44,10 @@ public sealed record CsSymbolInfo(string Kind, string Name, long FileId, string 
 
 /// <summary>Aggregate C# stats for the `stats` verb (NameHints is the name_hints row count, a
 /// cheap smoke signal that capture isn't silently broken).</summary>
-public sealed record CsStats(int Types, int Members, int Refs, int TotalAssemblies, int SyntacticAssemblies, int NameHints = 0)
+public sealed record CsStats(int Types, int Members, int Refs, int TotalAssemblies, int SyntacticAssemblies, int NameHints = 0, int BindingIncompleteAssemblies = 0)
 {
     public static readonly CsStats Empty = new(0, 0, 0, 0, 0, 0);
 }
+
+/// <summary>Compiler errors in a semantic analysis snapshot. Codes omit source text and absolute paths.</summary>
+public sealed record CsBindingFailure(string AssemblyName, int ErrorCount, string? ErrorCodes);

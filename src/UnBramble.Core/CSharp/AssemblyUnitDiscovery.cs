@@ -13,7 +13,7 @@ public static class AssemblyUnitDiscovery
     public const string PredefinedFirstPass = "Assembly-CSharp-firstpass";
     public const string PredefinedEditor = "Assembly-CSharp-Editor";
 
-    private sealed record AsmdefEntry(long FileId, string Path, string Dir, string? Guid, string Name, List<string> RawReferences, bool NoEngineReferences);
+    private sealed record AsmdefEntry(long FileId, string Path, string Dir, string? Guid, string Name, List<string> RawReferences, bool NoEngineReferences, bool IdentityOnly);
 
     /// <summary>
     /// Builds the current set of assembly units from the store's file inventory.
@@ -32,9 +32,9 @@ public static class AssemblyUnitDiscovery
         // Pass 1: collect asmdef/asmref/script rows, parsing asmdef JSON along the way.
         foreach (var row in files)
         {
-            if (row.IdentityOnly)
+            if (row.IdentityOnly && !Path.GetExtension(row.Path).Equals(".asmdef", StringComparison.OrdinalIgnoreCase))
             {
-                continue; // Library/PackageCache scripts never participate as their own assembly.
+                continue; // Cache asmdef ownership is needed for owned scripts' asmrefs, not cache graph extraction.
             }
 
             if (row.Kind == FileKind.Script)
@@ -54,7 +54,7 @@ public static class AssemblyUnitDiscovery
                 }
 
                 var name = string.IsNullOrWhiteSpace(parsed.Name) ? Path.GetFileNameWithoutExtension(row.Path) : parsed.Name!;
-                asmdefs.Add(new AsmdefEntry(row.Id, row.Path, dir, row.Guid, name, parsed.References ?? [], parsed.NoEngineReferences));
+                asmdefs.Add(new AsmdefEntry(row.Id, row.Path, dir, row.Guid, name, parsed.References ?? [], parsed.NoEngineReferences, row.IdentityOnly));
             }
             else if (extension.Equals(".asmref", StringComparison.OrdinalIgnoreCase))
             {
@@ -139,10 +139,17 @@ public static class AssemblyUnitDiscovery
         // can still participate in the reference graph/topological order) plus any predefined
         // assemblies that ended up with at least one script.
         var units = new List<AssemblyUnit>();
-        foreach (var asmdef in asmdefs)
+        var emittedNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var asmdef in asmdefs.OrderBy(entry => entry.IdentityOnly))
         {
-            var refs = asmdef.RawReferences.Select(ResolveReferenceToken).Distinct(StringComparer.Ordinal).ToList();
             scriptsByAssembly.TryGetValue(asmdef.Name, out var assignedScripts);
+            if (asmdef.IdentityOnly && (assignedScripts is not { Count: > 0 } || emittedNames.Contains(asmdef.Name)))
+            {
+                continue;
+            }
+
+            emittedNames.Add(asmdef.Name);
+            var refs = asmdef.RawReferences.Select(ResolveReferenceToken).Distinct(StringComparer.Ordinal).ToList();
             units.Add(new AssemblyUnit(asmdef.Name, asmdef.FileId, asmdef.Path, refs, assignedScripts ?? [], asmdef.NoEngineReferences));
         }
 
@@ -155,6 +162,27 @@ public static class AssemblyUnitDiscovery
         }
 
         return (units, warnings);
+    }
+
+    /// <summary>
+    /// Adds the generated project's source dependencies before ordering, compilation and
+    /// dependent invalidation. Keep discovery itself independent of csproj state so its
+    /// session cache can reuse asmdef/script ownership while mode decisions refresh by mtime.
+    /// </summary>
+    public static AssemblyUnit WithProjectReferences(AssemblyUnit unit, CsModeDecision modeDecision)
+    {
+        if (modeDecision.ProjectReferenceNames is not { Count: > 0 } projectReferences)
+        {
+            return unit;
+        }
+
+        return unit with
+        {
+            References = unit.References.Concat(projectReferences)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToList(),
+        };
     }
 
     /// <summary>

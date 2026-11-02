@@ -1,11 +1,12 @@
 using System.Xml;
 using System.Xml.Linq;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace UnBramble.Core.CSharp;
 
 public enum CsAnalysisMode
 {
-    /// <summary>Real semantic analysis: a generated IDE .csproj supplied exact defines + metadata references.</summary>
+    /// <summary>Real semantic analysis using generated-project defines and metadata/source references.</summary>
     Semantic,
 
     /// <summary>Honest degradation: no generated .csproj found, so no defines/references are guessed at.</summary>
@@ -27,7 +28,7 @@ public enum CsAnalysisMode
 /// generated" apart from "a csproj exists but Roslyn couldn't use it", instead of just seeing
 /// an anonymous "syntactic" label.
 /// </param>
-public sealed record CsModeDecision(CsAnalysisMode Mode, IReadOnlyList<string> Defines, IReadOnlyList<string> MetadataReferencePaths, long? CsprojMtimeTicks = null, string? SyntacticReason = null);
+public sealed record CsModeDecision(CsAnalysisMode Mode, IReadOnlyList<string> Defines, IReadOnlyList<string> MetadataReferencePaths, long? CsprojMtimeTicks = null, string? SyntacticReason = null, IReadOnlyList<string>? ProjectReferenceNames = null, bool AllowUnsafeBlocks = false, IReadOnlyList<string>? ExternalProjectReferenceNames = null, string? ProjectReferenceInputs = null, LanguageVersion LanguageVersion = Microsoft.CodeAnalysis.CSharp.LanguageVersion.Latest, IReadOnlyList<string>? BindingOnlySourcePaths = null, bool IsPackageExtension = false);
 
 /// <summary>Stable string reasons for why a unit is in Mode B, persisted to the <c>assemblies</c>
 /// table and shown verbatim (via <see cref="Describe"/>) in query/stats caveats.</summary>
@@ -36,12 +37,14 @@ public static class CsModeReasons
     public const string NoCsproj = "no-csproj";
     public const string CsprojUnusable = "csproj-unusable";
     public const string CsprojParseFailed = "csproj-parse-failed";
+    public const string CsprojUnsupportedLanguageVersion = "csproj-unsupported-language-version";
 
     public static string Describe(string? reason) => reason switch
     {
         NoCsproj => "no generated .csproj",
         CsprojUnusable => ".csproj unusable",
         CsprojParseFailed => ".csproj parse failed",
+        CsprojUnsupportedLanguageVersion => "unsupported .csproj language version",
         _ => "unknown",
     };
 }
@@ -49,7 +52,7 @@ public static class CsModeReasons
 /// <summary>
 /// Mode selection: looks for Unity's generated IDE project `&lt;name&gt;.csproj` at the project
 /// root. If present and parseable, its `&lt;DefineConstants&gt;` and
-/// `&lt;Reference&gt;/&lt;HintPath&gt;` entries drive Mode A (semantic). Otherwise Mode B
+/// `&lt;Reference&gt;/&lt;HintPath&gt;` and `&lt;ProjectReference&gt;` entries drive Mode A (semantic). Otherwise Mode B
 /// (syntactic) — never guess at defines/references.
 ///
 /// Deliberately does NOT cross-check the generated csproj against `ProjectVersion.txt`'s Unity
@@ -62,9 +65,10 @@ public static class CsModeSelector
     public static CsModeDecision Determine(string projectRoot, string assemblyName)
     {
         var csprojPath = Path.Combine(projectRoot, assemblyName + ".csproj");
+        var primaryInputs = CsProjectReferenceInputs.CaptureFile(csprojPath);
         if (!File.Exists(csprojPath))
         {
-            return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], null, CsModeReasons.NoCsproj);
+            return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], null, CsModeReasons.NoCsproj, ProjectReferenceInputs: primaryInputs);
         }
 
         // Captured once, up front, so every return below (including the malformed-XML
@@ -82,6 +86,13 @@ public static class CsModeSelector
                 .SelectMany(e => (e.Value ?? "").Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
+            var allowUnsafeBlocks = string.Equals(doc.Descendants(ns + "AllowUnsafeBlocks").LastOrDefault()?.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+            var languageVersionText = doc.Descendants(ns + "LangVersion").LastOrDefault()?.Value.Trim();
+            var languageVersion = LanguageVersion.Latest;
+            if (!string.IsNullOrWhiteSpace(languageVersionText) && !LanguageVersionFacts.TryParse(languageVersionText, out languageVersion))
+            {
+                return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], csprojMtimeTicks, CsModeReasons.CsprojUnsupportedLanguageVersion, ProjectReferenceInputs: primaryInputs);
+            }
 
             var references = new List<string>();
             foreach (var reference in doc.Descendants(ns + "Reference"))
@@ -100,18 +111,46 @@ public static class CsModeSelector
                 }
             }
 
-            if (defines.Count == 0 && references.Count == 0)
+            // Read generated Unity project data only. Never load/evaluate the project through
+            // MSBuild: doing so could execute arbitrary imported targets or lifecycle scripts.
+            // Unity names each generated project after its assembly, including dotted names.
+            var projectReferencePaths = doc.Descendants(ns + "ProjectReference")
+                .Where(e => !string.Equals(e.Element(ns + "ReferenceOutputAssembly")?.Value.Trim(), "false", StringComparison.OrdinalIgnoreCase))
+                .Select(e => e.Attribute("Include")?.Value.Trim())
+                .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p!)
+                .ToList();
+            var projectReferences = projectReferencePaths
+                .Select(p => Path.GetFileNameWithoutExtension(p.Replace('\\', '/')))
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToList();
+            var external = CsProjectReferenceResolver.Resolve(projectRoot, projectReferencePaths);
+            var bindingContext = CsProjectReferenceResolver.GetBindingContext(projectRoot, assemblyName, csprojPath, doc);
+            references.AddRange(external.MetadataPaths);
+            var inputs = external.Inputs is null ? primaryInputs : primaryInputs + "\n" + external.Inputs;
+            if (bindingContext.Inputs is not null)
+            {
+                inputs += "\n" + bindingContext.Inputs;
+            }
+
+            if (defines.Count == 0 && references.Count == 0 && projectReferences.Count == 0)
             {
                 // Present but unusable -- honest degradation, don't guess at semantics from an
                 // empty/malformed generated project.
-                return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], csprojMtimeTicks, CsModeReasons.CsprojUnusable);
+                return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], csprojMtimeTicks, CsModeReasons.CsprojUnusable,
+                    ProjectReferenceInputs: inputs, BindingOnlySourcePaths: bindingContext.SourcePaths, IsPackageExtension: bindingContext.SourcePaths.Count > 0);
             }
 
-            return new CsModeDecision(CsAnalysisMode.Semantic, defines, references, csprojMtimeTicks);
+            return new CsModeDecision(CsAnalysisMode.Semantic, defines, references.Distinct(StringComparer.OrdinalIgnoreCase).ToList(), csprojMtimeTicks,
+                ProjectReferenceNames: projectReferences, AllowUnsafeBlocks: allowUnsafeBlocks,
+                ExternalProjectReferenceNames: external.ExternalAssemblyNames, ProjectReferenceInputs: inputs, LanguageVersion: languageVersion,
+                BindingOnlySourcePaths: bindingContext.SourcePaths, IsPackageExtension: bindingContext.SourcePaths.Count > 0);
         }
         catch (Exception ex) when (ex is XmlException or IOException or UnauthorizedAccessException)
         {
-            return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], csprojMtimeTicks, CsModeReasons.CsprojParseFailed);
+            return new CsModeDecision(CsAnalysisMode.Syntactic, [], [], csprojMtimeTicks, CsModeReasons.CsprojParseFailed, ProjectReferenceInputs: primaryInputs);
         }
     }
 }

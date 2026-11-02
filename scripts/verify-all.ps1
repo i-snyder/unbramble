@@ -285,7 +285,7 @@ if (-not $SkipPublish) {
             # fixture landing in semantic mode.
             $statsOut = & "$repo/publish/unbramble.exe" stats -p $tmp --json
             if ($LASTEXITCODE -ne 0) { Write-Host 'stats failed'; exit 1 }
-            if ($statsOut -notmatch '"schemaVersion":11') { Write-Host "stats did not report schema v11: $statsOut"; exit 1 }
+            if ($statsOut -notmatch '"schemaVersion":14') { Write-Host "stats did not report schema v14: $statsOut"; exit 1 }
             if ($statsOut -notmatch '"nameHints":[1-9]') { Write-Host "stats reported zero name_hints (capture silently broken?): $statsOut"; exit 1 }
         }
 
@@ -314,7 +314,12 @@ if (-not $SkipPublish) {
             # method-group conversion failed to resolve against it, wrongly reporting Helper.cs
             # as provenDead).
             $msbuildNs = 'http://schemas.microsoft.com/developer/msbuild/2003'
-            $runtimeDlls = Get-ChildItem -Path $script:net10RuntimeDir.FullName -Filter '*.dll'
+            # Shared runtime folders also contain native DLLs. Only managed metadata belongs
+            # in a generated C# project's references; native files produce CS0009 diagnostics.
+            $runtimeDlls = Get-ChildItem -Path $script:net10RuntimeDir.FullName -Filter '*.dll' | Where-Object {
+                try { [void][Reflection.AssemblyName]::GetAssemblyName($_.FullName); $true }
+                catch [BadImageFormatException] { $false }
+            }
             $referenceXml = ($runtimeDlls | ForEach-Object {
                 $name = [IO.Path]::GetFileNameWithoutExtension($_.Name)
                 "    <Reference Include=`"$name`"><HintPath>$($_.FullName)</HintPath></Reference>"
@@ -329,11 +334,8 @@ $referenceXml
 </Project>
 "@ | Set-Content -Path $csprojPath -NoNewline
             }
-            # --full: the assemblies from fixture-smoke's earlier 'init' call are already
-            # recorded (syntactic mode) and nothing about their OWN .cs files changed (only the
-            # csprojs, which live outside every scanned root and are therefore never "dirty"
-            # paths) -- a plain incremental 'index' would never re-run CS analysis for them and
-            # the mode would stay stuck at syntactic. --full forces a clean reindex.
+            # Exercise a clean semantic rebuild here. Project-file-only incremental transitions
+            # are covered by CsBindingSafetyTests and the published binding smoke below.
             & $exe index -p $tmp --full; if ($LASTEXITCODE) { exit 1 }
 
             $dcOut = & $exe dead-candidates -p $tmp --json --include-advisory
@@ -356,6 +358,10 @@ $referenceXml
             # CORRECT outcome); reset $LASTEXITCODE so Step's own pass/fail check below reflects
             # this step's validation result, not the last subprocess's raw exit code.
             $global:LASTEXITCODE = 0
+        }
+
+        Step 'cs-binding-smoke' {
+            & "$repo/scripts/cs-binding-smoke.ps1" -ExePath "$repo/publish/unbramble.exe" -RuntimeDirectory $script:net10RuntimeDir.FullName
         }
 
         # Addressables-unavailable variant: an isolated minimal project whose manifest

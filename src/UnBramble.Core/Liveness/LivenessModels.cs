@@ -29,6 +29,10 @@ public static class ScreenReasons
     /// </summary>
     public const string UnityCallbackGuard = "unity-callback-guard";
 
+    /// <summary>Owned scripts extending a package assembly may be called by unindexed package
+    /// context. Seed them and their dependencies conservatively rather than infer deletion safety.</summary>
+    public const string PackageExtensionGuard = "package-extension-guard";
+
     /// <summary>
     /// A `.cs` candidate in a semantic-mode assembly (every assembly reaching evaluation is
     /// already guaranteed semantic) with literally ZERO rows in `symbols` -- e.g. a whole-file

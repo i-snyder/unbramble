@@ -32,6 +32,8 @@ public static class BlindSpots
     public const string DepthTruncated = "depth-truncated";
     public const string CsprojStale = "csproj-stale";
     public const string DisabledRegionRefsPossible = "disabled-region-refs-possible";
+    public const string CsBindingIncomplete = "cs-binding-incomplete";
+    public const string PackageCacheCallersPossible = "package-cache-callers-possible";
 
     /// <summary>
     /// Computes the blind spots that apply to a who-uses/uses answer. `string-path-loading` and
@@ -52,7 +54,7 @@ public static class BlindSpots
     /// identifier — see the class doc comment.
     /// </summary>
     public static IReadOnlyList<string> ForQuery(
-        bool anySyntacticAssembly, bool truncated, bool csprojStale, bool disabledRegionNameHint = false)
+        bool anySyntacticAssembly, bool truncated, bool csprojStale, bool disabledRegionNameHint = false, bool csBindingIncomplete = false, bool packageCacheCallersPossible = false)
     {
         var result = new List<string> { StringPathLoading, Reflection };
         if (anySyntacticAssembly)
@@ -73,6 +75,16 @@ public static class BlindSpots
         if (disabledRegionNameHint)
         {
             result.Add(DisabledRegionRefsPossible);
+        }
+
+        if (csBindingIncomplete)
+        {
+            result.Add(CsBindingIncomplete);
+        }
+
+        if (packageCacheCallersPossible)
+        {
+            result.Add(PackageCacheCallersPossible);
         }
 
         return result;

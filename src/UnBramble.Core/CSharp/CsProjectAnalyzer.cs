@@ -29,7 +29,7 @@ public static class CsProjectAnalyzer
     private const int ParallelParseThreshold = 8;
 
     /// <param name="metadataReferenceCache">
-    /// Path-keyed (case-insensitive), shared across every <see cref="BuildCompilation"/> call in
+    /// Path/mtime/size-keyed (case-insensitive), shared across every <see cref="BuildCompilation"/> call in
     /// one C# analysis pass: Unity-generated csprojs
     /// overwhelmingly reference the same few hundred DLLs (engine modules, `Library/
     /// ScriptAssemblies`, packages), and <see cref="MetadataReference"/> objects are immutable
@@ -61,7 +61,8 @@ public static class CsProjectAnalyzer
                 // "wins" is stored and both callers get the same instance back; the only cost is
                 // an occasional redundant load, never a correctness issue (MetadataReference
                 // instances are immutable and interchangeable for the same file).
-                return metadataReferenceCache.GetOrAdd(referencePath, static path => MetadataReference.CreateFromFile(path));
+                var key = CsProjectReferenceInputs.CaptureFile(referencePath);
+                return metadataReferenceCache.GetOrAdd(key, static (_, path) => MetadataReference.CreateFromFile(path), referencePath);
             }
             catch (IOException)
             {
@@ -121,7 +122,7 @@ public static class CsProjectAnalyzer
         Func<string, string> toFullPath,
         Func<string, PortableExecutableReference?> resolveReference)
     {
-        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: modeDecision.Defines);
+        var parseOptions = new CSharpParseOptions(modeDecision.LanguageVersion, preprocessorSymbols: modeDecision.Defines);
 
         // CSharpSyntaxTree.ParseText is thread-safe and CPU-bound -- parse every script in
         // this unit in parallel (bounded, above the small-unit threshold), writing into an
@@ -189,7 +190,48 @@ public static class CsProjectAnalyzer
             }
         }
 
+        // Registry source can be semantic context for owned asmref extensions without
+        // becoming graph source. These trees deliberately have no file-id or owned-path map.
+        var contextPaths = modeDecision.BindingOnlySourcePaths ?? [];
+        var contextTrees = new SyntaxTree[contextPaths.Count];
+        void ParseContext(int i)
+        {
+            string text;
+            try
+            {
+                text = File.ReadAllText(contextPaths[i]);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                text = "#error UnBramble could not read a generated package source file.\n";
+            }
+
+            contextTrees[i] = CSharpSyntaxTree.ParseText(text, parseOptions, path: contextPaths[i]);
+        }
+
+        if (contextPaths.Count >= ParallelParseThreshold)
+        {
+            Parallel.For(0, contextPaths.Count, ParseContext);
+        }
+        else
+        {
+            for (var i = 0; i < contextPaths.Count; i++)
+            {
+                ParseContext(i);
+            }
+        }
+
+        trees.AddRange(contextTrees);
+
         var references = new List<MetadataReference>();
+        // Current source compilations win over generated-project DLL HintPaths. Loading both
+        // can create duplicate types; loading only the DLL can silently bind stale code.
+        var sourceNames = new HashSet<string>(unit.References.Where(dependencyCompilations.ContainsKey), StringComparer.OrdinalIgnoreCase)
+        {
+            unit.Name,
+        };
+        sourceNames.UnionWith((modeDecision.ProjectReferenceNames ?? [])
+            .Except(modeDecision.ExternalProjectReferenceNames ?? [], StringComparer.OrdinalIgnoreCase));
         foreach (var referencePath in modeDecision.MetadataReferencePaths)
         {
             var reference = resolveReference(referencePath);
@@ -200,7 +242,10 @@ public static class CsProjectAnalyzer
                 continue;
             }
 
-            references.Add(reference);
+            if (!IsSourceAssembly(reference, sourceNames))
+            {
+                references.Add(reference);
+            }
         }
 
         var depRefs = new Dictionary<string, CompilationReference>(StringComparer.Ordinal);
@@ -214,9 +259,28 @@ public static class CsProjectAnalyzer
             }
         }
 
-        var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Disable);
+        var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Disable, allowUnsafe: modeDecision.AllowUnsafeBlocks);
         var compilation = CSharpCompilation.Create(unit.Name, trees, references, options);
         return new CsCompilationBuildResult(compilation, fileIdByTree, treeByPath, depRefs);
+    }
+
+    private static bool IsSourceAssembly(PortableExecutableReference reference, HashSet<string> sourceNames)
+    {
+        try
+        {
+            if (reference.GetMetadata() is not AssemblyMetadata assemblyMetadata)
+            {
+                return false;
+            }
+
+            var reader = assemblyMetadata.GetModules()[0].GetMetadataReader();
+            return sourceNames.Contains(reader.GetString(reader.GetAssemblyDefinition().Name));
+        }
+        catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException)
+        {
+            // Leave unusable metadata for Roslyn's diagnostics and binding-health gate.
+            return false;
+        }
     }
 }
 

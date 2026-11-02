@@ -85,6 +85,22 @@ public sealed class CsCompilationCache
 
     public void SetUnit(string unitName, CachedUnit unit) => _units[unitName] = unit;
 
+    public bool RemoveUnit(string unitName) => _units.TryRemove(unitName, out _);
+
+    public void ClearUnits() => _units.Clear();
+
+    public void RemoveUnitsExcept(IReadOnlyCollection<string> currentNames)
+    {
+        var current = new HashSet<string>(currentNames, StringComparer.Ordinal);
+        foreach (var name in _units.Keys)
+        {
+            if (!current.Contains(name))
+            {
+                _units.TryRemove(name, out _);
+            }
+        }
+    }
+
     /// <summary>
     /// Persistent metadata-reference cache keyed by (path, mtime, size) rather than path alone --
     /// Unity can rewrite `Library/ScriptAssemblies/*.dll` (a dependency's build output) without
@@ -126,8 +142,14 @@ public sealed class CsCompilationCache
         unit.AsmdefPath ?? "",
         unit.NoEngineReferences,
         string.Join(',', unit.References),
+        modeDecision.AllowUnsafeBlocks,
+        modeDecision.LanguageVersion,
         string.Join(',', modeDecision.Defines),
-        string.Join(',', modeDecision.MetadataReferencePaths));
+        string.Join(',', modeDecision.MetadataReferencePaths),
+        string.Join(',', modeDecision.ExternalProjectReferenceNames ?? []),
+        string.Join(',', modeDecision.BindingOnlySourcePaths ?? []),
+        modeDecision.IsPackageExtension,
+        modeDecision.ProjectReferenceInputs ?? "");
 
     /// <summary>
     /// Applies this unit's own dirty `.cs` files (added, changed, or removed since
@@ -239,6 +261,13 @@ public sealed class CsCompilationCache
         {
             if (!currentDependencyCompilations.TryGetValue(depName, out var depCompilation))
             {
+                // A source dependency can disappear or become syntactic-only. Keeping its
+                // old compilation reference would silently preserve stale semantic bindings.
+                if (depRefs.Remove(depName, out var unavailableReference))
+                {
+                    compilation = compilation.RemoveReferences(unavailableReference);
+                }
+
                 continue;
             }
 

@@ -55,4 +55,6 @@ public sealed record CsAssemblyAnalysis(
     IReadOnlyList<CsSymbolRow> Symbols,
     IReadOnlyList<CsSymbolRefRow> Refs,
     IReadOnlyList<CsNameHintRow> NameHints,
-    string? ModeReason = null);
+    string? ModeReason = null,
+    int BindingErrorCount = 0,
+    string? BindingErrorCodes = null);

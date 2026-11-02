@@ -59,7 +59,11 @@ public sealed class UnBrambleStore : IDisposable
     // to become valid again after the writer commits.
     // v11: adds a durable store instance identity. Heartbeats name the exact database instance
     // they maintain, so a fresh heartbeat can never vouch for a replaced or redirected cache.
-    public const int CurrentSchemaVersion = 11;
+    // v12: persist semantic compilation health; older indexes must re-extract omitted members
+    // and rebuild the effective source dependency graph rather than retain unqualified zeros.
+    // v13: fingerprint generated external project references and compiled package outputs.
+    // v14: rebind with generated language versions and owned package-assembly extensions.
+    public const int CurrentSchemaVersion = 14;
 
     private const string BuiltinGuidE = "0000000000000000e000000000000000";
     private const string BuiltinGuidF = "0000000000000000f000000000000000";
@@ -455,7 +459,10 @@ public sealed class UnBrambleStore : IDisposable
               mode           TEXT NOT NULL,
               analyzed_utc   TEXT,
               csproj_mtime   INTEGER,         -- v5: mode fingerprint, ticks or NULL (no csproj on disk)
-              mode_reason    TEXT             -- v6: CsModeReasons value, NULL when mode='semantic'
+              mode_reason    TEXT,            -- v6: CsModeReasons value, NULL when mode='semantic'
+              binding_error_count INTEGER NOT NULL DEFAULT 0,
+              binding_error_codes TEXT,
+              project_reference_inputs TEXT
             );
             """);
 
@@ -1740,7 +1747,7 @@ public sealed class UnBrambleStore : IDisposable
     }
 
     /// <summary>One assembly's mode fingerprint, as currently persisted (see <see cref="GetAssemblyModeFingerprints"/>).</summary>
-    public readonly record struct AssemblyModeFingerprint(string Name, long? CsprojMtimeTicks);
+    public readonly record struct AssemblyModeFingerprint(string Name, long? CsprojMtimeTicks, string? ProjectReferenceInputs = null);
 
     /// <summary>
     /// Every persisted assembly's mode fingerprint —
@@ -1754,19 +1761,19 @@ public sealed class UnBrambleStore : IDisposable
     public IReadOnlyList<AssemblyModeFingerprint> GetAssemblyModeFingerprints()
     {
         using var command = _connection.CreateCommand();
-        command.CommandText = "SELECT name, csproj_mtime FROM assemblies;";
+        command.CommandText = "SELECT name, csproj_mtime, project_reference_inputs FROM assemblies;";
         using var reader = command.ExecuteReader();
         var result = new List<AssemblyModeFingerprint>();
         while (reader.Read())
         {
-            result.Add(new AssemblyModeFingerprint(reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetInt64(1)));
+            result.Add(new AssemblyModeFingerprint(reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetInt64(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
         }
 
         return result;
     }
 
     /// <summary>
-    /// Refreshes ONLY the `csproj_mtime` column for every currently-discovered assembly unit,
+    /// Refreshes `csproj_mtime` and `project_reference_inputs` for every discovered assembly unit,
     /// regardless of whether that unit was "dirty" this sweep. This is deliberately separate from
     /// <see cref="ReplaceAssemblyAnalyses"/>'s own per-assembly upsert (which only touches
     /// dirty/analyzed units and also advances `mode` and `analyzed_utc`): a non-dirty Semantic
@@ -1774,14 +1781,9 @@ public sealed class UnBrambleStore : IDisposable
     /// (needed for cross-assembly resolution to stay correct), so its csproj fingerprint is known
     /// and worth persisting even though nothing forced a symbol-level re-analysis — otherwise the
     /// skip gate could see a stale fingerprint for that one assembly forever and needlessly keep
-    /// re-running the phase (never WRONG, but not the intended win either). `mode` is deliberately
-    /// left untouched here on purpose, not merely unhandled: it stays whatever
-    /// <see cref="ReplaceAssemblyAnalyses"/> last recorded for that name until the unit is
-    /// actually dirty again — e.g. `DeadCandidatesTests.Finding7_...` depends on a
-    /// semantic-mode assembly's `mode` row staying "semantic" after its generated csproj is
-    /// deleted (with no other tracked file touched), specifically so
-    /// `GetSemanticAssemblyNames()` still finds it and the "generated csproj missing" gate fires
-    /// with its exact expected message. Every unit passed here is assumed to already have an
+    /// re-running the phase. Mode/health remain owned by the analysis upsert; a changed or
+    /// missing csproj now explicitly dirties its unit and dependents before scheduling, so its
+    /// analysis and mode are refreshed even when no script changed. Every unit passed here is assumed to already have an
     /// `assemblies` row (true by construction: a brand-new unit is always "dirty" on first
     /// discovery and goes through <see cref="ReplaceAssemblyAnalyses"/>'s upsert first) -- this
     /// is a plain UPDATE, not an upsert, and silently no-ops for a name that doesn't exist rather
@@ -1799,14 +1801,16 @@ public sealed class UnBrambleStore : IDisposable
         using var transaction = _connection.BeginTransaction();
         using var command = _connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "UPDATE assemblies SET csproj_mtime = @csprojMtime WHERE name = @name;";
+        command.CommandText = "UPDATE assemblies SET csproj_mtime = @csprojMtime, project_reference_inputs = @projectReferenceInputs WHERE name = @name;";
         var nameP = command.Parameters.Add("@name", SqliteType.Text);
         var csprojMtimeP = command.Parameters.Add("@csprojMtime", SqliteType.Integer);
+        var projectReferenceInputsP = command.Parameters.Add("@projectReferenceInputs", SqliteType.Text);
 
         foreach (var fp in fingerprints)
         {
             nameP.Value = fp.Name;
             csprojMtimeP.Value = (object?)fp.CsprojMtimeTicks ?? DBNull.Value;
+            projectReferenceInputsP.Value = (object?)fp.ProjectReferenceInputs ?? DBNull.Value;
             command.ExecuteNonQuery();
         }
 
@@ -2106,14 +2110,39 @@ public sealed class UnBrambleStore : IDisposable
         transaction.Commit();
     }
 
+    /// <summary>Removed units must not leave symbols or binding failures behind after a script/asmdef move.</summary>
+    public void RemoveAssembliesExcept(IReadOnlyCollection<string> currentNames)
+    {
+        var current = new HashSet<string>(currentNames, StringComparer.Ordinal);
+        var removed = GetAssemblyNames().Where(name => !current.Contains(name)).ToList();
+        if (removed.Count == 0)
+        {
+            return;
+        }
+
+        using var transaction = _connection.BeginTransaction();
+        ExecuteNonQuery(_connection, "UPDATE build_reachable_state SET valid = 0, graph_generation = graph_generation + 1 WHERE id = 1;", transaction);
+        using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "DELETE FROM assemblies WHERE name = @name;";
+        var parameter = command.Parameters.Add("@name", SqliteType.Text);
+        foreach (var name in removed)
+        {
+            parameter.Value = name;
+            command.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
     private long UpsertAssembly(CsAssemblyAnalysis analysis, string nowUtc, SqliteTransaction transaction)
     {
         using var command = _connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            INSERT INTO assemblies (name, asmdef_file_id, mode, analyzed_utc, mode_reason)
-            VALUES (@name, @asmdefFileId, @mode, @analyzedUtc, @modeReason)
-            ON CONFLICT(name) DO UPDATE SET asmdef_file_id = excluded.asmdef_file_id, mode = excluded.mode, analyzed_utc = excluded.analyzed_utc, mode_reason = excluded.mode_reason
+            INSERT INTO assemblies (name, asmdef_file_id, mode, analyzed_utc, mode_reason, binding_error_count, binding_error_codes)
+            VALUES (@name, @asmdefFileId, @mode, @analyzedUtc, @modeReason, @bindingErrorCount, @bindingErrorCodes)
+            ON CONFLICT(name) DO UPDATE SET asmdef_file_id = excluded.asmdef_file_id, mode = excluded.mode, analyzed_utc = excluded.analyzed_utc, mode_reason = excluded.mode_reason, binding_error_count = excluded.binding_error_count, binding_error_codes = excluded.binding_error_codes
             RETURNING id;
             """;
         command.Parameters.AddWithValue("@name", analysis.AssemblyName);
@@ -2121,6 +2150,8 @@ public sealed class UnBrambleStore : IDisposable
         command.Parameters.AddWithValue("@mode", analysis.Mode == CsAnalysisMode.Semantic ? "semantic" : "syntactic");
         command.Parameters.AddWithValue("@analyzedUtc", nowUtc);
         command.Parameters.AddWithValue("@modeReason", (object?)analysis.ModeReason ?? DBNull.Value);
+        command.Parameters.AddWithValue("@bindingErrorCount", analysis.BindingErrorCount);
+        command.Parameters.AddWithValue("@bindingErrorCodes", (object?)analysis.BindingErrorCodes ?? DBNull.Value);
         return (long)command.ExecuteScalar()!;
     }
 
@@ -2378,7 +2409,22 @@ public sealed class UnBrambleStore : IDisposable
         var totalAssemblies = ExecuteScalarInt("SELECT COUNT(*) FROM assemblies;");
         var syntacticAssemblies = ExecuteScalarInt("SELECT COUNT(*) FROM assemblies WHERE mode = 'syntactic';");
         var nameHints = ExecuteScalarInt("SELECT COUNT(*) FROM name_hints;");
-        return new CsStats(types, members, refsCount, totalAssemblies, syntacticAssemblies, nameHints);
+        var bindingIncompleteAssemblies = ExecuteScalarInt("SELECT COUNT(*) FROM assemblies WHERE binding_error_count > 0;");
+        return new CsStats(types, members, refsCount, totalAssemblies, syntacticAssemblies, nameHints, bindingIncompleteAssemblies);
+    }
+
+    public IReadOnlyList<CsBindingFailure> GetCsBindingFailures()
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT name, binding_error_count, binding_error_codes FROM assemblies WHERE binding_error_count > 0 ORDER BY name;";
+        using var reader = command.ExecuteReader();
+        var result = new List<CsBindingFailure>();
+        while (reader.Read())
+        {
+            result.Add(new CsBindingFailure(reader.GetString(0), reader.GetInt32(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
+        }
+
+        return result;
     }
 
     // ---- UnityEvent name linking ---------------------------------------------------------
@@ -3511,7 +3557,7 @@ public sealed class UnBrambleStore : IDisposable
             return prefix == 'T' && LastDotSegment(body) == simpleName;
         }
 
-        return prefix == 'M' && !body.EndsWith(".#ctor", StringComparison.Ordinal) && LastDotSegment(body) == simpleName;
+        return prefix is 'M' or 'U' or 'E' or 'P' or 'F' && !body.EndsWith(".#ctor", StringComparison.Ordinal) && LastDotSegment(body) == simpleName;
     }
 
     private static string LastDotSegment(string value)
@@ -3877,6 +3923,14 @@ public sealed class UnBrambleStore : IDisposable
     }
 
     public sealed record SourceKeyedRow(long SourceFileId, string Key);
+
+    public bool HasPackageExtensionHint(long fileId)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM name_hints WHERE source_file_id = @fileId AND kind = 'cs-package-extension');";
+        command.Parameters.AddWithValue("@fileId", fileId);
+        return Convert.ToInt64(command.ExecuteScalar()) != 0;
+    }
 
     /// <summary>Path-ref name collision screen input: every path-kind
     /// unresolved ref, as (source_file_id, target_path_norm).</summary>
