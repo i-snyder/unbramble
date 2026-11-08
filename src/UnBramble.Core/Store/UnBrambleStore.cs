@@ -63,7 +63,8 @@ public sealed class UnBrambleStore : IDisposable
     // and rebuild the effective source dependency graph rather than retain unqualified zeros.
     // v13: fingerprint generated external project references and compiled package outputs.
     // v14: rebind with generated language versions and owned package-assembly extensions.
-    public const int CurrentSchemaVersion = 14;
+    // v15: re-extract named type receivers previously omitted from member-access expressions.
+    public const int CurrentSchemaVersion = 15;
 
     private const string BuiltinGuidE = "0000000000000000e000000000000000";
     private const string BuiltinGuidF = "0000000000000000f000000000000000";
@@ -3062,12 +3063,20 @@ public sealed class UnBrambleStore : IDisposable
         return true;
     }
 
-    public IReadOnlyList<ResolveMatch> Resolve(string query)
+    /// <summary>Compatibility accessor. Use ResolveWithDetails to detect truncated searches.</summary>
+    public IReadOnlyList<ResolveMatch> Resolve(string query) => ResolveWithDetails(query).Matches;
+
+    public ResolveResult ResolveWithDetails(string query, int? limit = ResolveResult.DefaultLimit)
     {
+        if (limit is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit), "The result limit must be positive or null for all matches.");
+        }
+
         var exact = FindByExactPath(query);
         if (exact is not null)
         {
-            return [exact];
+            return new ResolveResult([exact], Truncated: false, Limit: null);
         }
 
         if (RegexPatterns.BareGuid().IsMatch(query))
@@ -3075,11 +3084,20 @@ public sealed class UnBrambleStore : IDisposable
             var byGuid = FindByGuid(query.ToLowerInvariant());
             if (byGuid.Count > 0)
             {
-                return byGuid;
+                return new ResolveResult(byGuid, Truncated: false, Limit: null);
             }
         }
 
-        return FindByPathSubstring(query, limit: 20);
+        // Fetch one extra row to distinguish an exactly-full answer from a truncated one.
+        // Widen before adding so even int.MaxValue remains a valid requested limit.
+        var matches = FindByPathSubstring(query, limit is { } cap ? (long)cap + 1 : -1);
+        var truncated = limit is { } resultLimit && matches.Count > resultLimit;
+        if (truncated)
+        {
+            matches.RemoveAt(matches.Count - 1);
+        }
+
+        return new ResolveResult(matches, truncated, limit);
     }
 
     /// <summary>Dumps the full files table (small-scale use only: tests, `stats`/debug tooling).</summary>
@@ -3219,7 +3237,7 @@ public sealed class UnBrambleStore : IDisposable
         return result;
     }
 
-    private List<ResolveMatch> FindByPathSubstring(string fragment, int limit)
+    private List<ResolveMatch> FindByPathSubstring(string fragment, long limit)
     {
         using var command = _connection.CreateCommand();
         command.CommandText = "SELECT path, guid, kind, identity_only FROM files WHERE path LIKE @pattern ESCAPE '\\' ORDER BY path LIMIT @limit;";

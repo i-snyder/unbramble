@@ -6,7 +6,7 @@ Most users should [install a release](installing.md). Build from source to inspe
 
 - Windows x64
 - PowerShell 7
-- .NET 10 SDK
+- x64 .NET SDK 10.0.403 or a later 10.0.4xx patch
 - Visual Studio C++ build tools for NativeAOT; without them, the script falls back to a self-contained single-file build
 
 ## Build and test
@@ -17,7 +17,7 @@ cd unbramble
 ./scripts/verify-all.ps1 -SkipPublish
 ```
 
-The wrapper selects a complete x64 .NET 10 installation, builds with warnings as errors, and runs the test suite.
+The wrapper selects a complete x64 .NET installation that satisfies `global.json`, builds with warnings as errors, and runs the test suite. The minimum SDK supplies the .NET 10.0.14 security fixes; older SDKs are rejected. Stable SDK patches in the same feature band are accepted. Keep NuGet vulnerability checks enabled, and rebuild NativeAOT or self-contained executables after a runtime security update.
 
 For a release-style publish and smoke test, run:
 
@@ -26,6 +26,8 @@ For a release-style publish and smoke test, run:
 ```
 
 `publish/` will contain the files used to assemble the release package. For a quick development build, run `dotnet build`.
+
+If another session is using the local `publish/` executable, run `./scripts/verify-all.ps1 -PublishDirectory artifacts/verification` to verify a separate build without replacing it or stopping its watchers. Alternate output must be a subdirectory of `artifacts/`.
 
 For a local NativeAOT build that can be sampled with Windows Performance Recorder or inspected in a native debugger, run:
 

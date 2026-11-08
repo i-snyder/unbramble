@@ -120,6 +120,8 @@ public static class WatcherLock
         None,
         ExclusiveOwner,
         Transitioning,
+        Missing,
+        Inaccessible,
     }
 
     /// <summary>Captures a stable watcher ownership snapshot. The returned lease holds the
@@ -129,6 +131,34 @@ public static class WatcherLock
         string projectRoot,
         out SnapshotUnavailableReason unavailableReason) =>
         TryAcquireSnapshot(projectRoot, out unavailableReason, afterInitialOwnerProbe: null);
+
+    /// <summary>Probes only an existing lock file, without creating project state or changing
+    /// its contents. Missing state is distinct from a lock whose owner cannot be inspected.</summary>
+    public static SnapshotLease? TryAcquireExistingSnapshot(
+        string projectRoot,
+        out SnapshotUnavailableReason unavailableReason)
+    {
+        FileStream stream;
+        try
+        {
+            // Windows permits byte-range locks on a read handle. Unix exclusive advisory
+            // locks require write access, but neither path writes or creates file contents.
+            var access = OperatingSystem.IsWindows() ? FileAccess.Read : FileAccess.ReadWrite;
+            stream = new FileStream(PathFor(projectRoot), FileMode.Open, access, FileShare.ReadWrite);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            unavailableReason = SnapshotUnavailableReason.Missing;
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            unavailableReason = SnapshotUnavailableReason.Inaccessible;
+            return null;
+        }
+
+        return CaptureSnapshot(stream, out unavailableReason, afterInitialOwnerProbe: null);
+    }
 
     /// <summary>Deterministic test seam for simulating process death after the initial owner
     /// probe. Production callers use the public two-argument overload.</summary>
@@ -144,6 +174,14 @@ public static class WatcherLock
             return null;
         }
 
+        return CaptureSnapshot(stream, out unavailableReason, afterInitialOwnerProbe);
+    }
+
+    private static SnapshotLease? CaptureSnapshot(
+        FileStream stream,
+        out SnapshotUnavailableReason unavailableReason,
+        Action? afterInitialOwnerProbe)
+    {
         try
         {
             Lock(stream, TransitionLockOffset);

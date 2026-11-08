@@ -45,7 +45,7 @@ public enum WatcherEvent
     /// raised after that resync COMPLETES, same contract as <see cref="SelfHealSweep"/>.</summary>
     ErrorResync,
 
-    /// <summary>Stop()/Dispose() completed.</summary>
+    /// <summary>The owner stopped. Published once, before releasing its watcher lease.</summary>
     Stopped,
 
     /// <summary>The periodic heartbeat-idle timer ticked (~every <see
@@ -277,11 +277,30 @@ public sealed class WatcherHost : IDisposable
         DisposeTimerAndWait(ref _heartbeatIdleTimer);
         DisposeTimerAndWait(ref _selfHealTimer);
 
-        _lockHandle?.Dispose();
-        _lockHandle = null;
-
         IsActive = false;
-        _onEvent?.Invoke(WatcherEvent.Stopped);
+        // A rejected worker never owned the shared status file. Consume an owned lease only
+        // once so finally + Dispose cannot overwrite a healthy watcher with a redundant PID.
+        // Keep ownership through the final notification, preventing a successor from publishing
+        // its status before this owner's STOPPED snapshot. Failed promotion owns a lease too.
+        var ownedLease = Interlocked.Exchange(ref _lockHandle, null);
+        if (ownedLease is not null)
+        {
+            try
+            {
+                // Ownership protects the final status write, but no longer vouches for freshness.
+                // Wait out any publisher that captured the lease before it was detached above.
+                lock (_heartbeatGate)
+                {
+                    ownedLease.SuppressFreshness(static () => { });
+                }
+
+                _onEvent?.Invoke(WatcherEvent.Stopped);
+            }
+            finally
+            {
+                ownedLease.Dispose();
+            }
+        }
     }
 
     /// <summary>

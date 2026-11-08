@@ -464,6 +464,15 @@ public static partial class SemanticCsExtractor
 
         public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
+            // `Policy.Register()` names both a member and its type. The member call alone
+            // cannot answer an exact T:Policy query. Resolve the receiver symbol, not its
+            // value's type: an instance/local with the same spelling isn't a type reference.
+            if (model.GetSymbolInfo(node.Expression).Symbol is INamedTypeSymbol { TypeKind: not TypeKind.Error } receiverType &&
+                receiverType.OriginalDefinition.GetDocumentationCommentId() is { } typeDocId)
+            {
+                refs.Add(new CsSymbolRefRow(fileId, _currentMember, typeDocId, "type-ref", LineOf(node.Expression), "semantic"));
+            }
+
             if (!IsInvocationTargetPosition(node))
             {
                 AddMemberReference(node, node.Name, recordUnresolved: true);

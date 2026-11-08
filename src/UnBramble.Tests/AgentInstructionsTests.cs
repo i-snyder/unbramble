@@ -25,7 +25,7 @@ public class AgentInstructionsTests
         Assert.Contains("<!-- unbramble:begin", agentsText);
         Assert.Contains("<!-- unbramble:end -->", agentsText);
         Assert.Contains("## unbramble", agentsText);
-        Assert.Contains("guidance-v1", agentsText);
+        Assert.Contains("guidance-v2", agentsText);
         Assert.Contains("default tool for relationship discovery", agentsText);
         Assert.Contains("what uses, calls, subscribes to, references, depends on, is wired to", agentsText);
         Assert.Contains("Don't use `rg`, IDE search, or manual scanning to enumerate callers", agentsText);
@@ -34,6 +34,12 @@ public class AgentInstructionsTests
         Assert.Contains("audit-assets", agentsText);
         Assert.Contains("--fail-if-found", agentsText);
         Assert.Contains("--build-reachable-only", agentsText);
+        Assert.Contains("Reference queries establish freshness before answering", agentsText);
+        Assert.Contains("A missing or stopped watcher can make a query slower", agentsText);
+        Assert.Contains("unbramble watcher-status --json", agentsText);
+        Assert.Contains("optional watcher diagnostics", agentsText);
+        Assert.Contains("approved unsandboxed invocation", agentsText);
+        Assert.DoesNotContain("every query after that is fast", agentsText);
 
         var claudePath = Path.Combine(fixture.Root, "CLAUDE.md");
         Assert.True(File.Exists(claudePath));
@@ -105,6 +111,33 @@ public class AgentInstructionsTests
         Assert.Contains("## unbramble", result);
         Assert.Contains(outsideContentBefore, result);
         Assert.Contains(outsideContentAfter, result);
+    }
+
+    [Fact]
+    public void Init_OldGuidanceAtCurrentBinaryVersion_RefreshesOnlyManagedBlock()
+    {
+        using var fixture = FixtureCopy.Create();
+        Assert.Equal(0, CliRunner.Run("init", "-p", fixture.Root).ExitCode);
+        var agentsPath = Path.Combine(fixture.Root, "AGENTS.md");
+        var current = File.ReadAllText(agentsPath);
+        var stale = current.Replace("guidance-v2", "guidance-v1", StringComparison.Ordinal)
+            .Replace("Reference queries establish freshness before answering", "Old watcher-readiness policy", StringComparison.Ordinal);
+        File.WriteAllText(agentsPath, "Owner notes before." + Environment.NewLine + stale + "Owner notes after." + Environment.NewLine);
+        var claudePath = Path.Combine(fixture.Root, "CLAUDE.md");
+        var claudeText = "# Project guidance" + Environment.NewLine + "Read AGENTS.md; preserve this custom adapter." + Environment.NewLine;
+        File.WriteAllText(claudePath, claudeText);
+
+        Assert.Equal(0, CliRunner.Run("init", "-p", fixture.Root).ExitCode);
+
+        var result = File.ReadAllText(agentsPath);
+        Assert.Contains("guidance-v2", result);
+        Assert.DoesNotContain("guidance-v1", result);
+        Assert.DoesNotContain("Old watcher-readiness policy", result);
+        Assert.Contains("Reference queries establish freshness before answering", result);
+        Assert.Contains("Owner notes before.", result);
+        Assert.Contains("Owner notes after.", result);
+        Assert.Equal(1, CountOccurrences(result, "<!-- unbramble:begin"));
+        Assert.Equal(claudeText, File.ReadAllText(claudePath));
     }
 
     [Fact]

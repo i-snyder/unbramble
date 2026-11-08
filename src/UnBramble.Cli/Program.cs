@@ -354,6 +354,7 @@ public static class Program
                 // user-facing verb and deliberately does not appear in help.
                 "watch-worker" => RunWatchWorker(rest),
                 "monitor" => RunMonitor(rest),
+                "watcher-status" => RunWatcherStatus(rest),
                 "stop" => RunStop(rest),
                 "update" => RunUpdate(rest),
                 "uninstall" => RunUninstall(rest),
@@ -795,16 +796,24 @@ public static class Program
 
     private static int RunResolve(string[] rest)
     {
-        var reader = ArgReader.Parse(rest, "--json", "--verbose");
+        var reader = ArgReader.Parse(rest, ["--json", "--verbose", "--all"], ["--limit"]);
         var json = reader.HasFlag("--json");
         var verbose = reader.HasFlag("--verbose");
+        var requestedLimit = ParsePositiveIntOption(reader, "--limit");
+        if (reader.HasFlag("--all") && requestedLimit is not null)
+        {
+            throw new ArgReaderException("--all and --limit cannot be combined");
+        }
+
+        int? limit = reader.HasFlag("--all") ? null : requestedLimit ?? ResolveResult.DefaultLimit;
 
         var query = reader.Positional
             ?? throw new ArgReaderException("'resolve' requires a query (path, guid, or name fragment)");
 
         using var engine = UnBrambleEngine.Open(reader.Path ?? Directory.GetCurrentDirectory());
         PrintFreshness(engine, verbose, json);
-        var matches = engine.Resolve(query);
+        var result = engine.ResolveWithDetails(query, limit);
+        var matches = result.Matches;
 
         // A well-formed guid that resolves to nothing is an ANSWER ("not in this index"), not a
         // lookup failure — see UnBrambleEngine.IsBareGuid. Exit 0 so an agent probing a guid's
@@ -814,7 +823,7 @@ public static class Program
 
         if (json)
         {
-            WriteResolveJson(query, matches, unresolvedGuid);
+            WriteResolveJson(query, result, unresolvedGuid);
             return matches.Count == 0 && !unresolvedGuid ? 2 : 0;
         }
 
@@ -833,6 +842,11 @@ public static class Program
         foreach (var match in matches)
         {
             Console.WriteLine($"{match.Path}  guid={match.Guid ?? "(none)"}  kind={match.Kind.ToDbString()}");
+        }
+
+        if (result.Truncated)
+        {
+            WriteWarning($"results truncated to {result.Limit} matches; use --limit N or --all to expand, or narrow the query.");
         }
 
         return 0;
@@ -1743,7 +1757,7 @@ public static class Program
 
         using var engine = UnBrambleEngine.Open(reader.ResolveStartPath());
         using var progress = new SweepProgressPrinter(
-            "freshness: no live watcher heartbeat -- sweeping the index inline before answering (a cold sweep of a large project can take minutes; progress follows)");
+            "freshness: refreshing the index inline before answering (a cold sweep of a large project can take minutes; progress follows)");
         var result = engine.RunDeadCandidates(progress.OnScanProgress, progress.OnPhase);
         progress.Dispose();
 
@@ -2695,7 +2709,7 @@ public static class Program
     {
         var diag = json ? Console.Error : Console.Out;
         using var progress = new SweepProgressPrinter(
-            "freshness: no live watcher heartbeat -- sweeping the index inline before answering (a cold sweep of a large project can take minutes; progress follows)",
+            "freshness: refreshing the index inline before answering (a cold sweep of a large project can take minutes; progress follows)",
             diag);
         var outcome = engine.EnsureFresh(progress.OnScanProgress, progress.OnPhase, waitForConcurrentSweep);
         progress.Dispose();
@@ -2924,10 +2938,57 @@ public static class Program
     }
 
     /// <summary>
-    /// `unbramble monitor [path]`: ensures the project's detached watcher worker exists, then
-    /// polls the status file it writes. Ctrl+C stops only this presentation process; the worker
-    /// keeps the index fresh until its ordinary idle timeout or `unbramble stop`.
+    /// Finite watcher diagnostics. Never opens the store, refreshes the index, or starts a worker.
     /// </summary>
+    private static int RunWatcherStatus(string[] rest)
+    {
+        var reader = ArgReader.Parse(rest, "--json");
+        var projectRoot = ProjectDetector.FindProjectRoot(reader.ResolveStartPath());
+        if (projectRoot is null)
+        {
+            WriteError("no Unity project found (no ProjectSettings/ProjectVersion.txt)");
+            return 1;
+        }
+
+        var now = DateTime.UtcNow;
+        var health = WatcherHealth.Read(projectRoot, now);
+        if (reader.HasFlag("--json"))
+        {
+            var payload = new WatcherStatusResultJson
+            {
+                Project = projectRoot,
+                CheckedAtUtc = now,
+                State = health.State,
+                Reason = health.Reason,
+                OwnerActive = health.OwnerActive,
+                Pid = health.Pid,
+                WatcherSessionId = health.WatcherSessionId,
+                HeartbeatUtc = health.HeartbeatUtc,
+                HeartbeatFresh = health.HeartbeatFresh,
+                FreshnessSuppressed = health.FreshnessSuppressed,
+            };
+            Console.WriteLine(JsonSerializer.Serialize(payload, CliJsonContext.Default.WatcherStatusResultJson));
+        }
+        else
+        {
+            Console.WriteLine($"watcher: {health.State} ({health.Reason})");
+            if (health.Pid is { } pid)
+            {
+                Console.WriteLine($"pid: {pid}");
+            }
+
+            if (health.HeartbeatUtc is { } heartbeatUtc)
+            {
+                Console.WriteLine($"heartbeat: {heartbeatUtc.ToString("O", CultureInfo.InvariantCulture)}");
+            }
+
+            Console.WriteLine("Diagnostic snapshot only. Each reference query establishes freshness; an absent watcher can make it slower. This command doesn't check index readiness or semantic coverage.");
+        }
+
+        return 0;
+    }
+
+    /// <summary>Starts or observes a detached watcher and displays its progress until cancelled.</summary>
     private static int RunMonitor(string[] rest)
     {
         var reader = ArgReader.Parse(rest, [], []);
@@ -3257,15 +3318,17 @@ public static class Program
         }
     }
 
-    private static void WriteResolveJson(string query, IReadOnlyList<ResolveMatch> matches, bool unresolvedGuid)
+    private static void WriteResolveJson(string query, ResolveResult result, bool unresolvedGuid)
     {
         var payload = new ResolveResultJson
         {
             Query = query,
-            Matches = matches
+            Matches = result.Matches
                 .Select(m => new ResolveMatchJson { Path = m.Path, Guid = m.Guid, Kind = m.Kind.ToDbString(), IdentityOnly = m.IdentityOnly })
                 .ToList(),
             UnresolvedGuid = unresolvedGuid,
+            Truncated = result.Truncated,
+            Limit = result.Limit,
         };
         Console.WriteLine(JsonSerializer.Serialize(payload, CliJsonContext.Default.ResolveResultJson));
     }
@@ -3478,6 +3541,7 @@ public static class Program
               unbramble init [path] [--json] [--no-agents] [--no-defender] [--defender] [--vcs git|plastic|both|none]
               unbramble index [path] [--full] [--json]
               unbramble monitor [path]
+              unbramble watcher-status [path] [--json]
               unbramble stop
               unbramble update
               unbramble uninstall [path] [-y|--yes]       (remove UnBramble from one Unity project)
@@ -3489,7 +3553,7 @@ public static class Program
               unbramble uses <path|guid> [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--missing-only] [--paths file] [--summary|--group-by-target] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]
               unbramble audit-assets <paths-file> [--missing] [--group-by-target] [--include-owner-fields] [--build-reachable-only] [--top N] [--json|--jsonl] [--fail-if-found]
               unbramble cs-refs <name|doc-id> [-p path] [--json] [--verbose]   (alias of `who-uses <symbol>`)
-              unbramble resolve <path|guid|name-fragment> [-p path] [--json] [--verbose]
+              unbramble resolve <path|guid|name-fragment> [--limit N|--all] [-p path] [--json] [--verbose]
               unbramble stats [path] [--unresolved] [--collisions] [--json] [--verbose]
               unbramble dead-candidates [path] [--json] [--include-advisory] [--kind assets|cs|all]
 
@@ -3507,7 +3571,10 @@ public static class Program
             Addressables) or [not proven build-reachable] — absence of proof, not "unreachable".
 
             `monitor` starts the background watcher when needed and shows its live progress.
-            Ctrl+C closes the monitor only; `unbramble stop` stops the watcher.
+            Ctrl+C closes the monitor. A sandboxed host may also stop workers it launched;
+            start persistent watchers from a normal terminal or an approved unsandboxed invocation.
+            An independently started watcher survives closing attached monitors.
+            `unbramble stop` stops the watcher; its normal idle timeout also applies.
             """, ConsoleCapabilities.SupportsAnsi));
     }
 
@@ -3518,6 +3585,7 @@ public static class Program
             "init" => "unbramble init [path] [--json] [--verbose] [--no-agents] [--no-defender] [--defender] [--vcs git|plastic|both|none]",
             "index" => "unbramble index [path] [--full] [--json] [--verbose]",
             "monitor" => "unbramble monitor [path]",
+            "watcher-status" => "unbramble watcher-status [path] [--json]",
             "stop" => "unbramble stop",
             "update" => "unbramble update",
             "uninstall" => "unbramble uninstall [path] [-y|--yes] | unbramble uninstall --machine [-y|--yes]",
@@ -3526,7 +3594,7 @@ public static class Program
             "uses" => "unbramble uses <path|guid> [--transitive] [--depth N] [--kind guid|path|cs|event|dll] [--under prefix] [--missing-only] [--paths file] [--summary|--group-by-target] [--top N] [--build-reachable-only] [--fail-if-found] [--json] [--verbose]",
             "audit-assets" => "unbramble audit-assets <paths-file> [--missing] [--group-by-target] [--include-owner-fields] [--build-reachable-only] [--top N] [--json|--jsonl] [--fail-if-found] [-p project]",
             "cs-refs" => "unbramble cs-refs <name|doc-id> [-p path] [--json] [--verbose]",
-            "resolve" => "unbramble resolve <path|guid|name-fragment> [-p path] [--json] [--verbose]",
+            "resolve" => "unbramble resolve <path|guid|name-fragment> [--limit N|--all] [-p path] [--json] [--verbose]",
             "stats" => "unbramble stats [path] [--unresolved] [--collisions] [--json] [--verbose]",
             "dead-candidates" => "unbramble dead-candidates [path] [--json] [--include-advisory] [--kind assets|cs|all]",
             _ => null,
@@ -3543,6 +3611,18 @@ public static class Program
         {
             Console.WriteLine();
             Console.WriteLine("--missing-only lists unresolved references and exits 0 when the query succeeds. Add --fail-if-found for a CI-style exit code 3 when findings exist.");
+        }
+
+        if (verb == "resolve")
+        {
+            Console.WriteLine();
+            Console.WriteLine("Substring searches return up to 20 paths by default. --limit N changes the cap; --all returns every match. Exact path and GUID matches are uncapped.");
+        }
+
+        if (verb == "watcher-status")
+        {
+            Console.WriteLine();
+            Console.WriteLine("Reports the current watcher owner and heartbeat without starting a worker or updating the index. Exit 0 includes absent or unknown watchers. Reference queries still establish freshness themselves.");
         }
 
         return 0;

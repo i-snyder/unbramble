@@ -48,4 +48,28 @@ public class AutoIdleGateTests
         var muchLater = StartedUtc + Ttl + TimeSpan.FromMinutes(1);
         Assert.True(AutoIdleGate.ShouldExit(lastQueryUtc: null, StartedUtc, muchLater, Ttl));
     }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(180)]
+    public void PreStartQueryMarker_PreservesFullStartupGrace(int minutesBeforeStart)
+    {
+        var previousWorkerQuery = StartedUtc - TimeSpan.FromMinutes(minutesBeforeStart);
+
+        // A retained marker must neither trigger the first self-heal tick's idle check nor
+        // shorten the new worker's window when that marker was still recent at startup.
+        Assert.False(AutoIdleGate.ShouldExit(previousWorkerQuery, StartedUtc, StartedUtc.AddMinutes(5), Ttl));
+        Assert.False(AutoIdleGate.ShouldExit(previousWorkerQuery, StartedUtc, StartedUtc + Ttl - TimeSpan.FromTicks(1), Ttl));
+        Assert.True(AutoIdleGate.ShouldExit(previousWorkerQuery, StartedUtc, StartedUtc + Ttl, Ttl));
+    }
+
+    [Fact]
+    public void PostStartQuery_RenewsIdleWindowBeyondStartupDeadline()
+    {
+        var lastQuery = StartedUtc.AddMinutes(30);
+
+        Assert.False(AutoIdleGate.ShouldExit(lastQuery, StartedUtc, StartedUtc + Ttl + TimeSpan.FromMinutes(5), Ttl));
+        Assert.False(AutoIdleGate.ShouldExit(lastQuery, StartedUtc, lastQuery + Ttl - TimeSpan.FromTicks(1), Ttl));
+        Assert.True(AutoIdleGate.ShouldExit(lastQuery, StartedUtc, lastQuery + Ttl, Ttl));
+    }
 }

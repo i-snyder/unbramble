@@ -250,7 +250,7 @@ public class HomeCommandTests
         _ = CliRunner.Run("init", "-p", fixture.Root);
 
         var agentsPath = Path.Combine(fixture.Root, "AGENTS.md");
-        var oldGuidance = File.ReadAllText(agentsPath).Replace(" guidance-v1", "", StringComparison.Ordinal);
+        var oldGuidance = File.ReadAllText(agentsPath).Replace(" guidance-v2", " guidance-v1", StringComparison.Ordinal);
         File.WriteAllText(agentsPath, oldGuidance);
 
         var (exitCode, stdOut, _) = RunHome(["-p", fixture.Root], isInteractive: false, supportsAnsi: true, Answers());

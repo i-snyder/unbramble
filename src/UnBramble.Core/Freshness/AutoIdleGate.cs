@@ -13,12 +13,16 @@ public static class AutoIdleGate
     public static readonly TimeSpan DefaultIdleTtl = TimeSpan.FromHours(2);
 
     /// <summary>
-    /// True once <paramref name="nowUtc"/> is at least <paramref name="idleTtl"/> past the last
-    /// recorded fast-path query (<paramref name="lastQueryUtc"/>) -- or, if no query has ever
-    /// touched the marker yet, past <paramref name="referenceUtc"/> (the watcher's own start
-    /// time), so a freshly auto-spawned watcher always gets a full TTL window before it can
-    /// self-terminate even if nothing queries it again.
+    /// True once <paramref name="nowUtc"/> is at least <paramref name="idleTtl"/> past the later
+    /// of the last recorded fast-path query (<paramref name="lastQueryUtc"/>) and
+    /// <paramref name="referenceUtc"/> (the watcher's own start time). A marker retained from
+    /// an earlier worker mustn't shorten a freshly spawned watcher's full idle window.
     /// </summary>
-    public static bool ShouldExit(DateTime? lastQueryUtc, DateTime referenceUtc, DateTime nowUtc, TimeSpan idleTtl) =>
-        nowUtc - (lastQueryUtc ?? referenceUtc) >= idleTtl;
+    public static bool ShouldExit(DateTime? lastQueryUtc, DateTime referenceUtc, DateTime nowUtc, TimeSpan idleTtl)
+    {
+        var latestActivityUtc = lastQueryUtc is { } queryUtc && queryUtc > referenceUtc
+            ? queryUtc
+            : referenceUtc;
+        return nowUtc - latestActivityUtc >= idleTtl;
+    }
 }

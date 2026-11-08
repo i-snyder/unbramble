@@ -1852,6 +1852,9 @@ public sealed class UnBrambleEngine : IDisposable
 
     public IReadOnlyList<ResolveMatch> Resolve(string query) => _store.Resolve(MakeProjectRelativeIfInsideRoot(NormalizeQueryInput(query)));
 
+    public ResolveResult ResolveWithDetails(string query, int? limit = ResolveResult.DefaultLimit) =>
+        _store.ResolveWithDetails(MakeProjectRelativeIfInsideRoot(NormalizeQueryInput(query)), limit);
+
     /// <summary>
     /// True when <paramref name="query"/> is a well-formed 32-hex guid. Lets `resolve` tell
     /// "a real guid this project's index doesn't contain" (a definite ANSWER — a deleted asset,

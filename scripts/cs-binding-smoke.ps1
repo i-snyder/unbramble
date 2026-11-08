@@ -145,6 +145,10 @@ try {
     $incorrect = @($bound.results | Where-Object { $_.confidence -ne 'semantic' -or $_.source -ne 'Assets/Scripts/Entry.cs' -or $_.refKind -ne 'member-access' })
     Assert-Smoke ($incorrect.Count -eq 0) 'Event reference source, kind, or semantic confidence was incorrect.'
     Assert-Smoke ($bound.blindSpots -notcontains 'cs-binding-incomplete') 'Healthy source dependencies reported incomplete binding.'
+    $typeUses = Invoke-CliJson -Arguments @('who-uses', 'T:SmokeEvents.EventSource', '--symbol', '-p', $fixture, '--json')
+    Assert-Smoke (@($typeUses.results).Count -eq 2 -and -not $typeUses.possibleFalseNegative) 'Type query omitted the two resolved static member receivers.'
+    $incorrectTypes = @($typeUses.results | Where-Object { $_.confidence -ne 'proven' -or $_.refKind -ne 'type-ref' -or $_.targetKey -ne 'T:SmokeEvents.EventSource' -or $_.source -ne 'Assets/Scripts/Entry.cs' })
+    Assert-Smoke ($incorrectTypes.Count -eq 0) 'Type receiver references did not preserve exact targets and proven confidence.'
     $healthyStats = Invoke-CliJson -Arguments @('stats', '-p', $fixture, '--json')
     Assert-Smoke (@($healthyStats.bindingFailures).Count -eq 0 -and $healthyStats.cs.bindingIncompleteAssemblies -eq 0) 'Healthy assemblies retained binding failures.'
     $live = Invoke-CliJson -Arguments @('dead-candidates', '-p', $fixture, '--json', '--include-advisory')
@@ -184,7 +188,7 @@ try {
     Assert-Smoke ($unavailable.available -eq $false -and @($unavailable.provenDead).Count -eq 0 -and @($unavailable.advisoryDead).Count -eq 0) 'Incomplete binding emitted deletion candidates.'
     Assert-Smoke (($unavailable.unavailableReasons -join '; ') -match 'incomplete C# binding') 'Liveness omitted its incomplete-binding reason.'
 
-    Write-Host "PASS: $actualVersion source/package binding, metadata freshness, event liveness, and incomplete-binding gates"
+    Write-Host "PASS: $actualVersion source/package binding, type receivers, metadata freshness, event liveness, and incomplete-binding gates"
     $global:LASTEXITCODE = 0
 }
 finally {

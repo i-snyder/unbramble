@@ -402,7 +402,9 @@ function Invoke-SelfTest {
         return 1
     }
 
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) "unbramble-rgparity-selftest-$([guid]::NewGuid().ToString('n'))"
+    $fixtureName = "unbramble-rgparity-selftest-$([guid]::NewGuid().ToString('n'))"
+    $temporaryParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $tmp = Join-Path $temporaryParent $fixtureName
     Copy-Item -LiteralPath $fixtureSource -Destination $tmp -Recurse
 
     try {
@@ -430,7 +432,13 @@ function Invoke-SelfTest {
         Write-Host $output
         return 1
     } finally {
-        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $tmp) {
+            $resolvedFixture = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $tmp).ProviderPath)
+            if ([IO.Path]::GetDirectoryName($resolvedFixture) -ne $temporaryParent -or [IO.Path]::GetFileName($resolvedFixture) -ne $fixtureName) {
+                throw "Refusing cleanup outside the generated parity fixture: $resolvedFixture"
+            }
+            Remove-Item -LiteralPath $resolvedFixture -Recurse -Force
+        }
     }
 }
 

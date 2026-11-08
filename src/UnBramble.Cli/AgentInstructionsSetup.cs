@@ -24,7 +24,7 @@ internal static class AgentInstructionsSetup
     // Independent of the executable version: bump only when the managed instructions change in
     // a way existing projects should be prompted to pick up. The home command compares this token
     // read-only and points at `init`; it never edits AGENTS.md outside that deliberate setup verb.
-    private const string GuidanceMarkerToken = "guidance-v1";
+    private const string GuidanceMarkerToken = "guidance-v2";
 
     // Claude Code's @path import parser treats '.' as a valid path character (so imports like
     // @package.json work), which means punctuation glued directly onto "@AGENTS.md" -- e.g. a
@@ -40,7 +40,7 @@ internal static class AgentInstructionsSetup
     private const string BodyTemplate = """
         ## unbramble
 
-        `unbramble` is installed in this project and indexes it: GUID/asset references (prefabs, scenes, materials, shaders, Addressables, ...) plus real C# semantic analysis (Roslyn). Queries typically return in under a second once indexed.
+        `unbramble` is installed in this project and indexes it: GUID/asset references (prefabs, scenes, materials, shaders, Addressables, ...) plus real C# semantic analysis (Roslyn).
 
         `unbramble` is the default tool for relationship discovery in this Unity project. Start with it whenever the task asks what uses, calls, subscribes to, references, depends on, is wired to, or could be affected by a C# symbol or asset. Don't use `rg`, IDE search, or manual scanning to enumerate callers, subscribers, UnityEvents, asset references, or blast radius. Text search is appropriate only for locating an unknown target name or unindexed literal content; once you have a target, switch to `unbramble who-uses`, `uses`, or `resolve`. Read the files returned by UnBramble to understand their implementation.
 
@@ -54,9 +54,13 @@ internal static class AgentInstructionsSetup
 
         Audit several assets in one consistent snapshot with `audit-assets <paths-file> --missing --group-by-target --json` (the alias `uses --missing-only --paths <file>` is equivalent). Look up several GUIDs with `who-uses --guids <file>`. Add `--jsonl` to either batch command for one streaming object per target; progress goes to stderr.
 
-        Freshness is self-managed -- no manual reindex step. Only the first-ever query on a freshly inited project can take minutes (a one-time cost); every query after that is fast.
+        Reference queries establish freshness before answering, refreshing the index when needed. A missing or stopped watcher can make a query slower; it doesn't by itself invalidate results or require manual reindexing. Wait for the query to finish, then inspect its freshness and coverage warnings. Pause dependent work when the query fails or required coverage can't be established.
 
-        C# caveats are suppressed when the answer is strictly an asset-only missing-reference query. If a C#-dependent `who-uses`/`uses` answer names syntactic assemblies, or flags `possibleFalseNegative` (JSON: `syntacticAssemblies` / `possibleFalseNegative`), that assembly's callers aren't in the semantic index yet -- usually because Unity hasn't generated its `.csproj` yet (e.g. right after a fresh clone). Check any `speculative`-confidence leads printed alongside before concluding "nothing references this" -- real call sites found by identifier text, not proof, but not nothing either. Fix: open the project in the Unity Editor once (or open a .cs file in your IDE while Unity is running) to regenerate the missing `.csproj` files, then re-index.
+        Use `unbramble watcher-status --json` for optional watcher diagnostics. It doesn't start a worker or establish a query's freshness; don't make it or an OS process listing a prerequisite for reference queries. Restricted terminals can hide a live external worker.
+
+        For persistent watching, start `unbramble monitor <project-root>` in a normal terminal or through an approved unsandboxed invocation. Some sandboxed command hosts stop workers when the launching command is cancelled. A monitor started there can attach to an existing independent worker; closing that monitor leaves the independent owner running. The worker's normal idle timeout still applies.
+
+        C# caveats are suppressed when the answer is strictly an asset-only missing-reference query. If a C#-dependent `who-uses`/`uses` answer names syntactic assemblies, or flags `possibleFalseNegative` (JSON: `syntacticAssemblies` / `possibleFalseNegative`), that assembly's callers aren't in the semantic index yet -- usually because Unity hasn't generated its `.csproj` yet (e.g. right after a fresh clone). Check any `speculative`-confidence leads printed alongside before concluding "nothing references this" -- real call sites found by identifier text, not proof, but not nothing either. Fix: open the project in the Unity Editor once (or open a .cs file in your IDE while Unity is running) to regenerate the missing `.csproj` files, then rerun the query.
         """;
 
     /// <summary>Entry point, mirrors <c>Program.SetUpIgnoreFiles</c>'s shape: called once from

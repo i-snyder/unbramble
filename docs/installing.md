@@ -12,6 +12,12 @@ winget install --id i-snyder.unbramble --exact
 
 Open a new terminal at the root of a Unity project and run `unbramble`.
 
+## Watchers in sandboxed agent terminals
+
+Some command hosts terminate their child processes when a terminal command is cancelled. If closing `unbramble monitor` also stops its watcher, start `unbramble monitor <project-root>` from a normal terminal or an approved unsandboxed invocation. Other monitors can attach to that independent watcher and close without stopping it. The normal two-hour idle timeout still applies. Restricted process listings can hide an external watcher; an advancing `.unbramble/watcher.heartbeat` is better evidence than an empty process listing.
+
+Use `unbramble watcher-status <project-root> --json` for a finite watcher diagnostic without starting a worker or changing the index. An absent watcher can make queries slower; it doesn't make their results unusable. Each reference query establishes freshness before answering, and its coverage warnings still determine how to interpret the result. Watcher status alone doesn't establish index readiness or semantic coverage.
+
 ## Update
 
 Update a WinGet installation from anywhere:

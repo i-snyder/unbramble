@@ -41,12 +41,66 @@ public sealed class ResolveResultJson
     [JsonPropertyName("matches")]
     public required List<ResolveMatchJson> Matches { get; init; }
 
+    [JsonPropertyName("truncated")]
+    public bool Truncated { get; init; }
+
+    /// <summary>Substring result cap; null for exact path/GUID results or --all.</summary>
+    [JsonPropertyName("limit")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public int? Limit { get; init; }
+
     /// <summary>True when the query was a well-formed 32-hex guid that no indexed asset carries —
     /// a definite "not in this index" answer (deleted asset, or one from a package that isn't
     /// installed), distinct from a query string that simply matched nothing. Exit code is 0 in
     /// this case, matching how `who-uses` already answers an unmatched bare guid.</summary>
     [JsonPropertyName("unresolvedGuid")]
     public bool UnresolvedGuid { get; init; }
+}
+
+public sealed class WatcherStatusResultJson
+{
+    [JsonPropertyName("unbrambleSchema")]
+    public int UnBrambleSchema { get; init; } = SchemaVersion.Current;
+
+    [JsonPropertyName("project")]
+    public required string Project { get; init; }
+
+    [JsonPropertyName("checkedAtUtc")]
+    public DateTime CheckedAtUtc { get; init; }
+
+    [JsonPropertyName("state")]
+    public required string State { get; init; }
+
+    [JsonPropertyName("reason")]
+    public required string Reason { get; init; }
+
+    [JsonPropertyName("ownerActive")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public bool? OwnerActive { get; init; }
+
+    [JsonPropertyName("pid")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public int? Pid { get; init; }
+
+    [JsonPropertyName("watcherSessionId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? WatcherSessionId { get; init; }
+
+    [JsonPropertyName("heartbeatUtc")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public DateTime? HeartbeatUtc { get; init; }
+
+    [JsonPropertyName("heartbeatFresh")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public bool? HeartbeatFresh { get; init; }
+
+    [JsonPropertyName("freshnessSuppressed")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public bool? FreshnessSuppressed { get; init; }
+
+    /// <summary>Watcher health is diagnostic; only the consuming query checks index readiness.</summary>
+    [JsonPropertyName("indexReadinessChecked")]
+    public bool IndexReadinessChecked => false;
 }
 
 public sealed class FileCountsJson
@@ -803,6 +857,7 @@ public sealed class DeadCandidatesResultJson
 }
 
 [JsonSerializable(typeof(ResolveResultJson))]
+[JsonSerializable(typeof(WatcherStatusResultJson))]
 [JsonSerializable(typeof(StatsResultJson))]
 [JsonSerializable(typeof(IndexResultJson))]
 [JsonSerializable(typeof(QueryResultJson))]
