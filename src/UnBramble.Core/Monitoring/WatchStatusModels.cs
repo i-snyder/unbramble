@@ -82,4 +82,5 @@ public sealed record WatchStatusSnapshot(
     DateTime LastUpdatedUtc,
     CurrentActivity? Current,
     WatchTotals Totals,
-    LastPassSummary? LastPass);
+    LastPassSummary? LastPass,
+    string? WatcherSessionId = null);

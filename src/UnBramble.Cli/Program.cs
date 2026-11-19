@@ -14,6 +14,7 @@ using UnBramble.Core.Monitoring;
 using UnBramble.Core.ProjectDetection;
 using UnBramble.Core.Query;
 using UnBramble.Core.Scanning;
+using UnBramble.Core.Store;
 
 namespace UnBramble.Cli;
 
@@ -854,16 +855,20 @@ public static class Program
 
     private static int RunStats(string[] rest)
     {
-        var reader = ArgReader.Parse(rest, "--json", "--unresolved", "--collisions", "--verbose");
+        var reader = ArgReader.Parse(rest, "--json", "--unresolved", "--collisions", "--verbose", "--refresh");
         var json = reader.HasFlag("--json");
         var unresolvedOnly = reader.HasFlag("--unresolved");
         var collisionsOnly = reader.HasFlag("--collisions");
         var verbose = reader.HasFlag("--verbose");
 
-        using var engine = UnBrambleEngine.Open(reader.ResolveStartPath());
-        // stats is a status command: it must report current state immediately rather than
-        // stalling behind another process's (e.g. a just-started watcher's) first index.
-        PrintFreshness(engine, verbose, json, waitForConcurrentSweep: false);
+        var startPath = reader.ResolveStartPath();
+        if (!reader.HasFlag("--refresh") && !unresolvedOnly && !collisionsOnly)
+        {
+            return RunStatsSnapshot(startPath, json, verbose);
+        }
+
+        using var engine = UnBrambleEngine.Open(startPath);
+        PrintFreshness(engine, verbose, json);
 
         if (collisionsOnly)
         {
@@ -891,11 +896,62 @@ public static class Program
             return 0;
         }
 
+        return PrintStatsSummary(engine, json, freshnessChecked: true);
+    }
+
+    private static int RunStatsSnapshot(string startPath, bool json, bool verbose)
+    {
+        using var snapshot = UnBrambleEngine.OpenStatsSnapshot(startPath);
+        var diagnostics = json ? Console.Error : Console.Out;
+        PrintWarnings(snapshot.Warnings, diagnostics);
+        var newerSchema = snapshot.StoredSchemaVersion > UnBrambleStore.CurrentSchemaVersion;
+        var health = WatcherHealth.Read(snapshot.ProjectRoot, DateTime.UtcNow);
+        if (verbose)
+        {
+            diagnostics.WriteLine($"watcher: {health.State} ({health.Reason})");
+        }
+
+        // An existing database without a schema stamp may still be initializing.
+        var canStartWorker = snapshot.Status == StatsSnapshotStatus.Missing
+            || (snapshot.StoredSchemaVersion.HasValue && !newerSchema);
+        if (canStartWorker && snapshot.Config.Watch.AutoStart && health.OwnerActive == false)
+        {
+            _deferredWatcherStart?.Request(snapshot.ProjectRoot);
+        }
+
+        if (snapshot.Engine is { } engine)
+        {
+            if (!json)
+            {
+                Console.WriteLine("Counts from the committed index. Run 'unbramble stats --refresh' to include pending project changes.");
+            }
+            return PrintStatsSummary(engine, json, freshnessChecked: false);
+        }
+
+        var state = snapshot.Status.ToString().ToLowerInvariant();
+        var message = newerSchema
+            ? $"The index uses schema v{snapshot.StoredSchemaVersion}. Use a compatible UnBramble version to read its counts."
+            : $"The index is {state}. Run 'unbramble stats --refresh' for current counts or 'unbramble monitor' to follow background indexing.";
+        if (json)
+        {
+            var payload = new UnavailableStatsJson { Project = snapshot.ProjectRoot, IndexState = state, Message = message };
+            Console.WriteLine(JsonSerializer.Serialize(payload, CliJsonContext.Default.UnavailableStatsJson));
+        }
+        else
+        {
+            Console.WriteLine(message);
+        }
+        return 0;
+    }
+
+    private static int PrintStatsSummary(UnBrambleEngine engine, bool json, bool freshnessChecked)
+    {
         var stats = engine.GetStats();
+        var collisionGroups = engine.GetGuidCollisionGroups();
 
         if (json)
         {
-            WriteStatsJson(engine, stats);
+            WriteStatsJson(engine, stats, collisionGroups.Count, freshnessChecked);
             return 0;
         }
 
@@ -916,7 +972,6 @@ public static class Program
 
         // Only a row when there ARE collisions — a permanent "Guid collisions: 0" line would
         // spend attention on the healthy case.
-        var collisionGroups = engine.GetGuidCollisionGroups();
         if (collisionGroups.Count > 0)
         {
             var collisionFiles = collisionGroups.Sum(g => g.Paths.Count);
@@ -2690,7 +2745,7 @@ public static class Program
     }
 
     /// <summary>
-    /// The pull path: resolve/stats/who-uses/uses all call this right after opening the engine.
+    /// The pull path for queries and explicitly refreshed stats.
     /// Prints whichever warnings apply (the sweep's, if one ran; else the plain open warnings)
     /// and, with --verbose, one line distinguishing "watcher heartbeat" freshness from a sweep
     /// that just ran (verify-all's watch-smoke step asserts on this exact wording).
@@ -2701,32 +2756,14 @@ public static class Program
     /// results could display after them and read as trailing garbage. One stream = intrinsic
     /// order. `--json` keeps the stderr routing: stdout's JSON contract stays pure.
     /// </summary>
-    /// <param name="waitForConcurrentSweep">Forwarded to <see
-    /// cref="UnBrambleEngine.EnsureFresh"/> -- see that param's own doc comment. False only for
-    /// `stats` (a status command that must report immediately, not stall behind someone else's
-    /// first index).</param>
-    private static void PrintFreshness(UnBrambleEngine engine, bool verbose, bool json, bool waitForConcurrentSweep = true, bool assetOnly = false)
+    private static void PrintFreshness(UnBrambleEngine engine, bool verbose, bool json, bool assetOnly = false)
     {
         var diag = json ? Console.Error : Console.Out;
         using var progress = new SweepProgressPrinter(
-            "freshness: refreshing the index inline before answering (a cold sweep of a large project can take minutes; progress follows)",
+            "freshness: checking the index before answering (a cold rebuild can take minutes)",
             diag);
-        var outcome = engine.EnsureFresh(progress.OnScanProgress, progress.OnPhase, waitForConcurrentSweep);
+        var outcome = engine.EnsureFresh(progress.OnScanProgress, progress.OnPhase);
         progress.Dispose();
-
-        if (outcome.ConcurrentSweepInProgress)
-        {
-            // Always printed, not verbose-gated: this materially changes how to read whatever
-            // numbers follow (a possibly-partial snapshot, not the final one), so it can't be
-            // hidden behind --verbose the way the routine sweep-vs-heartbeat detail below is.
-            WriteParagraph(
-                AnsiStyle.InlineCommands(
-                    "another unbramble process is currently updating this project's index -- the state below is the last committed snapshot, not the final one. Re-run once it finishes; use 'unbramble monitor' to inspect a watcher, or 'unbramble stop' if the owner is stuck.",
-                    ConsoleCapabilities.SupportsAnsi),
-                firstPrefix: AnsiStyle.Label("note: ", ConsoleCapabilities.SupportsAnsi),
-                contPrefix: "      ",
-                writer: diag);
-        }
 
         var warnings = outcome.SweepPerformed ? outcome.Summary!.Warnings : engine.OpenWarnings;
         if (assetOnly && !verbose)
@@ -2747,10 +2784,6 @@ public static class Program
             var filesSwept = outcome.Summary!.Stats.Files.Total + outcome.Summary.Stats.IdentityOnlyCount;
             diag.WriteLine($"freshness: swept {FormatCount(filesSwept)} files");
         }
-        else if (outcome.ConcurrentSweepInProgress)
-        {
-            diag.WriteLine("freshness: concurrent sweep detected elsewhere, not waited on");
-        }
         else if (outcome.ConcurrentUpdateCompleted)
         {
             diag.WriteLine("freshness: concurrent index repair completed");
@@ -2766,10 +2799,8 @@ public static class Program
     /// Background watcher startup (docs/architecture.md): when <see
     /// cref="UnBrambleEngine.EnsureFresh"/> just had to run the inline sweep (no fresh heartbeat),
     /// schedule a detached watcher worker so the NEXT query can skip the sweep instead.
-    /// Fire-and-forget in every sense that matters: never awaited, never blocks the CLI's exit,
-    /// and every failure path here (disabled by config, crash-loop cooldown, spawn throws) is
-    /// swallowed silently -- THIS query already got a correct answer from EnsureFresh's own
-    /// sweep, so nothing here is allowed to change its answer or exit code. See
+    /// Automatic startup waits only for a bounded handoff. Failures cannot change the answer
+    /// or exit code of the query that requested the worker. See
     /// <see cref="AutoSpawnPolicy"/> for the actual (unit-tested) decision logic; this method is
     /// just the I/O shell around it.
     /// </summary>
@@ -2800,7 +2831,7 @@ public static class Program
             {
                 var now = DateTime.UtcNow;
                 var lastAttempt = AutoWatchMarkers.TryReadLastSpawnAttempt(projectRoot);
-                if (!AutoSpawnPolicy.ShouldSpawn(sweepPerformed: true, autoStartEnabled: true, lastAttempt, now, AutoSpawnPolicy.DefaultCooldown))
+                if (!AutoSpawnPolicy.CooldownElapsed(lastAttempt, now, AutoSpawnPolicy.DefaultCooldown))
                 {
                     return;
                 }
@@ -2808,14 +2839,7 @@ public static class Program
                 // Record the attempt at handoff, after the query released its read lease.
                 // The cooldown applies even if spawning is disabled by the test guard or fails.
                 AutoWatchMarkers.RecordSpawnAttempt(projectRoot, now);
-                if (spawnObserver is not null)
-                {
-                    spawnObserver(projectRoot);
-                }
-                else
-                {
-                    SpawnDetachedWatcher(projectRoot);
-                }
+                SpawnDetachedWatcher(projectRoot, launch: spawnObserver);
             }
             catch (Exception)
             {
@@ -2825,61 +2849,74 @@ public static class Program
     }
 
     /// <summary>
-    /// Fires off a detached watcher worker for <paramref name="projectRoot"/> and returns
-    /// immediately -- the actual I/O shell behind <see cref="MaybeAutoSpawnWatch"/>'s decision,
-    /// and reused as-is by the zero-args home command (<see cref="HomeCommand"/>) for its own
-    /// "ensure a watcher is running" step (Cases D/E), so the two callers can never diverge on
-    /// how a watcher gets spawned.
+    /// Starts the worker and allows a short handoff window for automatic launches. A host
+    /// can block in ShellExecute even after the query has written its complete answer.
     /// </summary>
-    internal static void SpawnDetachedWatcher(string projectRoot, bool explicitRequest = false)
+    internal static void SpawnDetachedWatcher(string projectRoot, bool explicitRequest = false, Action<string>? launch = null)
     {
-        // Test-only escape hatch: UnBramble.Tests sets this once for the whole test process (see
-        // TestSupport's module initializer) so that exercising a query verb against a fixture
-        // with no live heartbeat -- the common case for nearly every CLI-level test -- never
-        // actually spawns a real OS process. Unset (the normal case) in every real invocation.
-        if (!explicitRequest && Environment.GetEnvironmentVariable("UNBRAMBLE_DISABLE_AUTO_SPAWN") == "1")
+        // The test guard skips real automatic launches. Injected launchers exercise the handoff.
+        if (!explicitRequest && launch is null && Environment.GetEnvironmentVariable("UNBRAMBLE_DISABLE_AUTO_SPAWN") == "1")
         {
+            return;
+        }
+
+        launch ??= StartWatcherProcess;
+        void TryLaunch()
+        {
+            try
+            {
+                launch(projectRoot);
+            }
+            catch (Exception)
+            {
+                // A refused launch leaves the next query to establish freshness on its own.
+            }
+        }
+
+        if (explicitRequest)
+        {
+            TryLaunch();
             return;
         }
 
         try
         {
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exePath))
+            var launcher = new Thread(TryLaunch) { IsBackground = true, Name = "UnBramble watcher launch" };
+            if (OperatingSystem.IsWindows())
             {
-                return;
+                launcher.SetApartmentState(ApartmentState.STA);
             }
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = exePath,
-
-                // Load-bearing (found live against a large real project, verified with a
-                // pipe-captured repro): UseShellExecute=false makes .NET call CreateProcess
-                // with bInheritHandles=TRUE, so the detached child inherits EVERY inheritable
-                // handle in this query process -- most damagingly the caller's stdout/stderr
-                // pipe write-ends when a script/agent captures this query's output. The caller
-                // then never sees EOF when the query exits (the long-lived watcher still holds
-                // a duplicated write handle) and hangs indefinitely on a query that actually
-                // finished. Redirecting the child's OWN std streams does not help: the leak is
-                // the wholesale handle duplication, not the child's std handle assignment.
-                // UseShellExecute=true launches via ShellExecuteEx, which does not inherit this
-                // process's handles at all -- the child starts with no tie of any kind to the
-                // caller's pipes. Costs: no env-var/redirection control (needed: none) and a
-                // shell association lookup (a direct .exe path, always fine).
-                UseShellExecute = true,
-                WindowStyle = ProcessWindowStyle.Hidden,
-            };
-            startInfo.ArgumentList.Add("watch-worker");
-            startInfo.ArgumentList.Add(projectRoot);
-
-            using var child = Process.Start(startInfo);
+            launcher.Start();
+            // Give a healthy launch time to create the detached process before this CLI exits.
+            // A blocked shell call stays on a background thread, so it cannot keep the CLI alive.
+            launcher.Join(TimeSpan.FromSeconds(1));
         }
         catch (Exception)
         {
-            // Best-effort only -- see this method's own doc comment. A failed spawn just means
-            // the next query sweeps again too, exactly like this one did.
+            // Thread setup itself is also best effort.
         }
+    }
+
+    private static void StartWatcherProcess(string projectRoot)
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exePath))
+        {
+            return;
+        }
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = exePath,
+            // ShellExecute isolates inheritable handles. A worker inheriting either captured
+            // output pipe would keep the caller waiting for EOF after the CLI exits.
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        };
+        startInfo.ArgumentList.Add("watch-worker");
+        startInfo.ArgumentList.Add(projectRoot);
+        using var child = Process.Start(startInfo);
     }
 
     private static int RunWatchWorker(string[] rest)
@@ -2892,48 +2929,7 @@ public static class Program
         Console.SetOut(TextWriter.Null);
         Console.SetError(TextWriter.Null);
 
-        using var engine = UnBrambleEngine.Open(reader.ResolveStartPath());
-        var tracker = new WatchStatusTracker(engine.ProjectRoot, Environment.ProcessId);
-        engine.EnableWatchCompilationCache(tracker.OnDiagnosticLine);
-
-        using var stopSignal = new ManualResetEventSlim(false);
-        using var host = new WatcherHost(
-            engine,
-            onEvent: e =>
-            {
-                if (e == WatcherEvent.HeartbeatIdle)
-                {
-                    tracker.OnIdleTick();
-                }
-                else
-                {
-                    tracker.OnWatcherEvent(e);
-                }
-
-                if (e == WatcherEvent.AutoIdleTimeout)
-                {
-                    stopSignal.Set();
-                }
-            },
-            onDiagnostic: tracker.OnDiagnosticLine,
-            autoMode: true);
-
-        try
-        {
-            // Background workers never queue as passive standbys. If another worker already owns
-            // the project, this redundant spawn exits successfully and immediately.
-            if (!host.TryStartOnceForAuto())
-            {
-                return 0;
-            }
-
-            stopSignal.Wait();
-        }
-        finally
-        {
-            host.Stop();
-        }
-
+        WatcherHost.RunAutoWorker(reader.ResolveStartPath());
         return 0;
     }
 
@@ -3333,13 +3329,16 @@ public static class Program
         Console.WriteLine(JsonSerializer.Serialize(payload, CliJsonContext.Default.ResolveResultJson));
     }
 
-    private static void WriteStatsJson(UnBrambleEngine engine, StatsResult stats)
+    private static void WriteStatsJson(UnBrambleEngine engine, StatsResult stats, int guidCollisions, bool freshnessChecked)
     {
         var syntactic = engine.GetSyntacticAssemblyDetails();
         var payload = new StatsResultJson
         {
             Project = engine.ProjectRoot,
+            IndexState = "available",
             UnityVersion = engine.UnityVersion,
+            FreshnessChecked = freshnessChecked,
+            GuidCollisions = guidCollisions,
             Files = ToFileCountsJson(stats.Files),
             IdentityOnly = stats.IdentityOnlyCount,
             GuidLess = stats.GuidLessCount,
@@ -3554,7 +3553,7 @@ public static class Program
               unbramble audit-assets <paths-file> [--missing] [--group-by-target] [--include-owner-fields] [--build-reachable-only] [--top N] [--json|--jsonl] [--fail-if-found]
               unbramble cs-refs <name|doc-id> [-p path] [--json] [--verbose]   (alias of `who-uses <symbol>`)
               unbramble resolve <path|guid|name-fragment> [--limit N|--all] [-p path] [--json] [--verbose]
-              unbramble stats [path] [--unresolved] [--collisions] [--json] [--verbose]
+              unbramble stats [path] [--refresh] [--unresolved] [--collisions] [--json] [--verbose]
               unbramble dead-candidates [path] [--json] [--include-advisory] [--kind assets|cs|all]
 
             who-uses also accepts a C# symbol (a name, "Type.Member", or a "T:"/"M:"/"F:"/"P:"/
@@ -3595,7 +3594,7 @@ public static class Program
             "audit-assets" => "unbramble audit-assets <paths-file> [--missing] [--group-by-target] [--include-owner-fields] [--build-reachable-only] [--top N] [--json|--jsonl] [--fail-if-found] [-p project]",
             "cs-refs" => "unbramble cs-refs <name|doc-id> [-p path] [--json] [--verbose]",
             "resolve" => "unbramble resolve <path|guid|name-fragment> [--limit N|--all] [-p path] [--json] [--verbose]",
-            "stats" => "unbramble stats [path] [--unresolved] [--collisions] [--json] [--verbose]",
+            "stats" => "unbramble stats [path] [--refresh] [--unresolved] [--collisions] [--json] [--verbose]",
             "dead-candidates" => "unbramble dead-candidates [path] [--json] [--include-advisory] [--kind assets|cs|all]",
             _ => null,
         };
@@ -3623,6 +3622,12 @@ public static class Program
         {
             Console.WriteLine();
             Console.WriteLine("Reports the current watcher owner and heartbeat without starting a worker or updating the index. Exit 0 includes absent or unknown watchers. Reference queries still establish freshness themselves.");
+        }
+
+        if (verb == "stats")
+        {
+            Console.WriteLine();
+            Console.WriteLine("The summary reads committed counts and can start an absent background watcher. A missing or incomplete index has no counts yet. --refresh waits for current counts. --unresolved and --collisions also check freshness.");
         }
 
         return 0;

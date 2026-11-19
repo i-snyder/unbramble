@@ -20,6 +20,34 @@ public static class IndexWriterLock
 
     public static string IntentPathFor(string projectRoot) => UnBramblePaths.RelativeTo(projectRoot, IntentRelativePath);
 
+    /// <summary>Probes an existing data lock once. A Windows sharing violation distinguishes
+    /// a writer from concurrent readers. Other failures leave writer activity unknown.</summary>
+    internal static bool? ProbeWriterActive(string projectRoot)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            using var probe = new FileStream(PathFor(projectRoot), FileMode.Open, FileAccess.Read, FileShare.Read);
+            return false;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+        catch (IOException ex) when (ex.HResult == unchecked((int)0x80070020)) // ERROR_SHARING_VIOLATION
+        {
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     public static IDisposable? TryAcquire(string projectRoot)
     {
         var intent = TryAcquireIntent(projectRoot, FileAccess.ReadWrite, FileShare.None);

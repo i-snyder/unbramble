@@ -2,6 +2,12 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      winget_upgrade_from:
+        description: 'Optional published WinGet version to test upgrading from (leave blank to skip package installation tests)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -14,6 +20,8 @@ jobs:
   release:
     runs-on: windows-latest
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write
     steps:
@@ -29,7 +37,10 @@ jobs:
         shell: pwsh
         run: choco install ripgrep --yes --no-progress
       - name: Validate release request
+        id: version
         shell: pwsh
+        env:
+          WINGET_UPGRADE_FROM: ${{ inputs.winget_upgrade_from }}
         run: |
           if ($env:GITHUB_REF -ne 'refs/heads/main') {
             throw 'Run the Release workflow from main.'
@@ -40,6 +51,10 @@ jobs:
             throw "Invalid project version '$projectVersion'. Use a stable version such as 0.2.0."
           }
           "RELEASE_VERSION=$projectVersion" >> $env:GITHUB_ENV
+          "version=$projectVersion" >> $env:GITHUB_OUTPUT
+          if ($env:WINGET_UPGRADE_FROM -and ($env:WINGET_UPGRADE_FROM -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or [version]$env:WINGET_UPGRADE_FROM -ge [version]$projectVersion)) {
+            throw 'Choose an older published WinGet version for the upgrade test.'
+          }
           $tag = "v$projectVersion"
           $releaseNotesPath = "./docs/release-notes/$tag.md"
           if (-not (Test-Path -LiteralPath $releaseNotesPath -PathType Leaf)) {
@@ -76,3 +91,30 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "GitHub release creation failed for $tag."
           }
+  verify-install:
+    needs: release
+    if: inputs.winget_upgrade_from != ''
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - name: Check out the release fixture and installation test
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify published ZIP and WinGet install, upgrade, and uninstall
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINGET_UPGRADE_FROM: ${{ inputs.winget_upgrade_from }}
+        run: ./scripts/verify-release-install.ps1 -Version $env:RELEASE_VERSION -PreviousVersion $env:WINGET_UPGRADE_FROM
+      - name: Save verified WinGet manifests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: winget-manifest-${{ env.RELEASE_VERSION }}
+          path: ${{ runner.temp }}/unbramble-release/candidate/manifests/i/i-snyder/unbramble/${{ env.RELEASE_VERSION }}/*.yaml
+          if-no-files-found: error
+          retention-days: 3

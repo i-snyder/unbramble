@@ -22,6 +22,8 @@ Don't publish proprietary project content when recording or reporting results. F
 
 Confirm file and edge counts look plausible, every C# assembly reports semantic mode, and `stats --json` reports no `bindingFailures`. Semantic mode alone doesn't establish complete binding. If a cold index is unexpectedly slow, check `unbramble defender status` and `.unbramble/index-history.log` before assuming Roslyn is responsible.
 
+To diagnose startup, run `stats --json` for the committed summary and `watcher-status --json` for ownership. A cold summary can return `indexState: missing` before the worker opens the database. On Windows, `absent/index-writer-active` means a writer holds the index without a watcher owner. `starting/watcher-startup` identifies the elected worker before its first freshness publication. Once it reports `watching/verified-heartbeat`, rerun `stats --json` for counts and coverage. Use `stats --refresh --json` to wait for current counts in one command.
+
 ### 2. Compare GUID references with ripgrep
 
 ```powershell

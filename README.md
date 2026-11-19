@@ -50,6 +50,7 @@ Hand the map to your agent or query it yourself:
 
 - `unbramble who-uses <target>` — find what references an asset, file, GUID, type, or member.
 - `unbramble uses <target>` — find what an asset or file depends on.
+- `unbramble stats` — read counts and coverage from the committed index. Add `--refresh` to wait for current counts. Use `unbramble watcher-status` to see whether the watcher is starting or already watching.
 - `unbramble dead-candidates` — screen for conservatively identified removal candidates for project cleanup.
 - `unbramble --help` — see every path through the hedge.
 

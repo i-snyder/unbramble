@@ -29,12 +29,8 @@ public sealed record FreshnessOutcome(
 
     /// <summary>
     /// Only reachable when <see cref="UnBrambleEngine.EnsureFresh"/> is called with
-    /// <c>waitForConcurrentSweep: false</c> (currently just `stats`, which reports current status
-    /// rather than blocking on it) AND another process already holds <see
-    /// cref="UnBramble.Core.Freshness.WatcherLock"/>: the caller neither swept itself (that would
-    /// race the other writer's own transaction, see EnsureFresh's own doc comment) nor waited for
-    /// the other writer's heartbeat (the whole point of the non-waiting mode). Whatever this call
-    /// returns reflects the last committed state, not necessarily the current one.
+    /// <c>waitForConcurrentSweep: false</c> and another process owns freshness or the writer
+    /// lease. A non-waiting caller can inspect the committed data but cannot assume it is current.
     /// </summary>
     public static FreshnessOutcome SkippedConcurrentSweep() => new(false, true, null, null);
 }

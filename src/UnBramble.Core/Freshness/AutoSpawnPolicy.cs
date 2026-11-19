@@ -20,13 +20,9 @@ public static class AutoSpawnPolicy
     /// watcher already owns freshness -- nothing to fix), the project's `watch.autoStart` config
     /// is enabled, and the crash-loop cooldown since the last spawn attempt (if any) has elapsed.
     /// </summary>
-    public static bool ShouldSpawn(bool sweepPerformed, bool autoStartEnabled, DateTime? lastAttemptUtc, DateTime nowUtc, TimeSpan cooldown)
-    {
-        if (!sweepPerformed || !autoStartEnabled)
-        {
-            return false;
-        }
+    public static bool ShouldSpawn(bool sweepPerformed, bool autoStartEnabled, DateTime? lastAttemptUtc, DateTime nowUtc, TimeSpan cooldown) =>
+        sweepPerformed && autoStartEnabled && CooldownElapsed(lastAttemptUtc, nowUtc, cooldown);
 
-        return lastAttemptUtc is not { } last || nowUtc - last >= cooldown;
-    }
+    public static bool CooldownElapsed(DateTime? lastAttemptUtc, DateTime nowUtc, TimeSpan cooldown) =>
+        lastAttemptUtc is not { } last || nowUtc - last >= cooldown;
 }

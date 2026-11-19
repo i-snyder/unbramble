@@ -21,19 +21,29 @@ public static class WatcherHealth
     public static WatcherHealthSnapshot Read(string projectRoot, DateTime nowUtc)
     {
         using var owner = WatcherLock.TryAcquireExistingSnapshot(projectRoot, out var unavailableReason);
-        if (owner is null)
+        if (owner is null && unavailableReason != WatcherLock.SnapshotUnavailableReason.Missing)
         {
-            return unavailableReason == WatcherLock.SnapshotUnavailableReason.Missing
-                ? new("absent", false, null, null, null, null, null, "no-owner")
-                : new("unknown", null, null, null, null, null, null,
-                    unavailableReason == WatcherLock.SnapshotUnavailableReason.Transitioning
-                        ? "owner-transition"
-                        : "lock-unavailable");
+            return new("unknown", null, null, null, null, null, null,
+                unavailableReason == WatcherLock.SnapshotUnavailableReason.Transitioning
+                    ? "owner-transition"
+                    : "lock-unavailable");
         }
 
-        if (!owner.IsWatcherActive)
+        if (owner is null || !owner.IsWatcherActive)
         {
-            return new("absent", false, null, null, null, null, null, "no-owner");
+            var writerActive = IndexWriterLock.ProbeWriterActive(projectRoot) == true;
+            if (owner is null && writerActive)
+            {
+                // No gate can be held on a missing watcher.lock. If it appeared during the
+                // writer probe, the writer may be the new watcher doing its own startup sweep.
+                using var recheck = WatcherLock.TryAcquireExistingSnapshot(projectRoot, out var recheckReason);
+                if (recheckReason != WatcherLock.SnapshotUnavailableReason.Missing)
+                {
+                    return new("unknown", null, null, null, null, null, null, "owner-transition");
+                }
+            }
+
+            return new("absent", false, null, null, null, null, null, writerActive ? "index-writer-active" : "no-owner");
         }
 
         // Hold the transition gate while reading: a graceful handoff cannot replace the
@@ -52,7 +62,18 @@ public static class WatcherHealth
 
         if (owner.IsFreshnessSuppressed)
         {
-            return Result("updating", "freshness-suppressed");
+            // Progress can supply the owner's PID before a heartbeat, but a retained progress
+            // file cannot establish the phase, even when it belongs to the current session.
+            if (pid is null && owner.SessionId is not null)
+            {
+                var status = WatchStatusFile.TryRead(projectRoot, maxBytes: 64 * 1024);
+                if (status is { Pid: > 0 } && string.Equals(status.WatcherSessionId, owner.SessionId, StringComparison.Ordinal))
+                {
+                    pid = status.Pid;
+                }
+            }
+
+            return owner.IsStarting ? Result("starting", "watcher-startup") : Result("updating", "freshness-suppressed");
         }
 
         if (heartbeat is not { } current)

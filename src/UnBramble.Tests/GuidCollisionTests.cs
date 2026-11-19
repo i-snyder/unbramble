@@ -61,6 +61,11 @@ public class GuidCollisionTests
         Assert.Equal(0, statsExit);
         Assert.Contains("Guid collisions: 1 guid claimed by 6 files (list: stats --collisions)", statsOut);
 
+        var summary = CliRunner.Run("stats", "-p", fixture.Root, "--json");
+        Assert.Equal(0, summary.ExitCode);
+        using var json = JsonDocument.Parse(summary.StdOut);
+        Assert.Equal(1, json.RootElement.GetProperty("guidCollisions").GetInt32());
+
         var (listExit, listOut, _) = CliRunner.Run("stats", "-p", fixture.Root, "--collisions");
         Assert.Equal(0, listExit);
         Assert.Contains($"guid {RockGuid}:", listOut);

@@ -192,14 +192,14 @@ function Get-IndexedGuidMap {
 function Get-RefSourceExtensions {
     param([string]$ExePath, [string]$ProjectRoot)
 
-    $json = & $ExePath stats -p $ProjectRoot --json
+    $json = & $ExePath stats -p $ProjectRoot --refresh --json
     if ($LASTEXITCODE -ne 0) {
-        throw "'unbramble stats --json' failed (exit $LASTEXITCODE): $json"
+        throw "'unbramble stats --refresh --json' failed (exit $LASTEXITCODE): $json"
     }
 
     $obj = $json | ConvertFrom-Json
     if (-not $obj.refSourceExtensions -or $obj.refSourceExtensions.Count -eq 0) {
-        throw "'unbramble stats --json' did not report refSourceExtensions -- binary/script have drifted"
+        throw "'unbramble stats --refresh --json' did not report refSourceExtensions -- binary/script have drifted"
     }
 
     return @($obj.refSourceExtensions)

@@ -1,5 +1,6 @@
 using System.Text;
 using UnBramble.Core.Model;
+using UnBramble.Core.Monitoring;
 using UnBramble.Core.Scanning;
 
 namespace UnBramble.Core.Freshness;
@@ -89,6 +90,7 @@ public sealed class WatcherHost : IDisposable
     private readonly UnBrambleEngine _engine;
     private readonly WatcherOptions _options;
     private readonly Action<WatcherEvent>? _onEvent;
+    private readonly Action<string>? _onOwnerAcquired;
 
     // Diagnostics only (null unless a caller opts in): fine-grained tracing of the raw FSW
     // event -> path-translation -> scope-check -> debounce -> batch pipeline, one line per
@@ -185,11 +187,13 @@ public sealed class WatcherHost : IDisposable
         Action<WatcherEvent>? onEvent = null,
         Action<string>? onDiagnostic = null,
         bool autoMode = false,
-        TimeSpan? autoIdleTtl = null)
+        TimeSpan? autoIdleTtl = null,
+        Action<string>? onOwnerAcquired = null)
     {
         _engine = engine;
         _options = options ?? WatcherOptions.Default;
         _onEvent = onEvent;
+        _onOwnerAcquired = onOwnerAcquired;
         _onDiagnostic = onDiagnostic;
         _autoMode = autoMode;
         _autoIdleTtl = autoIdleTtl ?? AutoIdleGate.DefaultIdleTtl;
@@ -208,29 +212,74 @@ public sealed class WatcherHost : IDisposable
     }
 
     /// <summary>
-    /// Detached-worker entry point (Program's hidden `watch-worker`, docs/architecture.md
-    /// "Auto-spawn watcher"): attempts the watcher lock exactly ONCE and returns immediately --
-    /// never schedules the passive retry loop <see cref="Start"/> does. An auto-spawned watcher
-    /// exists to fill the gap until a real watcher owns freshness; if one already does (this
-    /// returns false), queuing up behind it would let a burst of stale-heartbeat queries each
-    /// spawn a process that all sit waiting on the same lock -- the crash-loop cooldown
-    /// (<see cref="AutoSpawnPolicy"/>) only bounds how often a NEW spawn is attempted, not how
-    /// long an already-spawned-but-waiting process would otherwise stick around. Returns true
-    /// once this host has fully promoted (same synchronous, blocking-through-the-catch-up-sweep
-    /// behavior <see cref="Start"/> has when it wins the lock immediately).
+    /// Waits out any in-flight transition and tries the lifetime owner lock once.
+    /// Returns false if a watcher already owns the project, or true after this host's
+    /// catch-up sweep and promotion. Only <see cref="Start"/> schedules standby retries.
     /// </summary>
     public bool TryStartOnceForAuto()
     {
         _stopRequested = false;
-        var handle = WatcherLock.TryAcquire(_engine.ProjectRoot);
+        var handle = WatcherLock.TryAcquire(_engine.ProjectRoot, waitForTransition: true);
         if (handle is null)
         {
             return false;
         }
 
-        _lockHandle = handle;
-        Promote();
+        Promote(handle);
         return true;
+    }
+
+    /// <summary>Elect the detached worker before opening its store, which may block on schema setup.
+    /// A redundant worker leaves immediately. The owner runs until its idle timeout.</summary>
+    public static void RunAutoWorker(string startPath)
+    {
+        var projectRoot = UnBrambleEngine.RequireProjectRoot(startPath);
+        using var owner = WatcherLock.TryAcquire(projectRoot, waitForTransition: true);
+        if (owner is null)
+        {
+            return;
+        }
+
+        var tracker = new WatchStatusTracker(projectRoot, Environment.ProcessId);
+        using var stopSignal = new ManualResetEventSlim(false);
+        WatcherHost? host = null;
+        try
+        {
+            tracker.OnOwnerAcquired(owner.SessionId);
+            using var engine = UnBrambleEngine.OpenProjectRoot(projectRoot);
+            engine.EnableWatchCompilationCache(tracker.OnDiagnosticLine);
+            using (host = new WatcherHost(engine, onEvent: OnEvent, onDiagnostic: tracker.OnDiagnosticLine, autoMode: true))
+            {
+                host.Promote(owner);
+                stopSignal.Wait();
+            }
+        }
+        finally
+        {
+            // Once constructed, the host publishes Stopped under the lease before releasing it.
+            // A store-open failure happens earlier and still owns the final status write here.
+            if (host is null)
+            {
+                tracker.OnWatcherEvent(WatcherEvent.Stopped);
+            }
+        }
+
+        void OnEvent(WatcherEvent e)
+        {
+            if (e == WatcherEvent.HeartbeatIdle)
+            {
+                tracker.OnIdleTick();
+            }
+            else
+            {
+                tracker.OnWatcherEvent(e);
+            }
+
+            if (e == WatcherEvent.AutoIdleTimeout)
+            {
+                stopSignal.Set();
+            }
+        }
     }
 
     /// <summary>
@@ -398,8 +447,7 @@ public sealed class WatcherHost : IDisposable
             return;
         }
 
-        _lockHandle = handle;
-        Promote();
+        Promote(handle);
     }
 
     /// <summary>
@@ -410,10 +458,12 @@ public sealed class WatcherHost : IDisposable
     ///   3. drain whatever buffered during steps 1-2;
     ///   4. begin writing the heartbeat (only now may other processes' pull-sweeps trust it).
     /// </summary>
-    private void Promote()
+    private void Promote(WatcherLock.WatcherLease handle)
     {
         lock (_updateOperationGate)
         {
+            _lockHandle = handle;
+            _onOwnerAcquired?.Invoke(handle.SessionId);
             lock (_pendingGate)
             {
                 _buffering = true;

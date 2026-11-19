@@ -7,7 +7,8 @@ namespace UnBramble.Core.Freshness;
 /// Single-active-watcher enforcement. Current watchers open `.unbramble/watcher.lock` with
 /// shared access and hold an OS byte-range owner lock on byte zero; byte one is a short-lived
 /// transition gate; byte two is held whenever the owner's index isn't safe to trust; and the rest
-/// of the file records the owner's random session id. Queries hold the transition gate while
+/// of the file records the owner's random session id. A fourth lock beyond EOF marks startup
+/// until the owner first publishes freshness, without changing the session record. Queries hold the transition gate while
 /// probing the other bytes and reading the owner session and heartbeat, so acquisition,
 /// graceful disposal, and freshness publication appear atomic. Snapshots re-probe ownership to
 /// detect process death, which releases byte locks without participating in the transition gate.
@@ -22,6 +23,8 @@ public static class WatcherLock
     private const long LockLength = 1;
     private const long SessionOffset = 3;
     private const int MaximumSessionBytes = 128;
+    // Outside both the legacy session record and the buffered reads used to retrieve it.
+    private const long StartupLockOffset = 1024 * 1024;
 
     public const string RelativePath = UnBramblePaths.WatcherLockRelativePath;
 
@@ -33,9 +36,11 @@ public static class WatcherLock
     /// evaluation and the graph query that consumes that result.</summary>
     public static FileStream? TryAcquireLegacyGuard(string projectRoot) => TryOpenShared(projectRoot);
 
-    /// <summary>Returns an owned watcher lease, or null while any current or older watcher owns
-    /// the lock. Disposing the lease releases both the OS lock and the file handle.</summary>
-    public static WatcherLease? TryAcquire(string projectRoot)
+    /// <summary>Tries both the transition and owner locks immediately. Disposing an acquired
+    /// lease releases the OS locks and the file handle.</summary>
+    public static WatcherLease? TryAcquire(string projectRoot) => TryAcquire(projectRoot, waitForTransition: false);
+
+    internal static WatcherLease? TryAcquire(string projectRoot, bool waitForTransition)
     {
         var stream = TryOpenShared(projectRoot);
         if (stream is null)
@@ -47,11 +52,22 @@ public static class WatcherLock
         var ownsTransition = false;
         var ownsOwner = false;
         var ownsFreshness = false;
+        var ownsStartup = false;
         try
         {
             try
             {
-                Lock(stream, TransitionLockOffset);
+                // A diagnostic can hold the transition gate even when there is no watcher.
+                // A one-shot worker waits for that observation to finish, then tests the
+                // lifetime owner lock exactly once. A legacy exclusive owner fails the open.
+                if (waitForTransition)
+                {
+                    LockWhenAvailable(stream, TransitionLockOffset);
+                }
+                else
+                {
+                    Lock(stream, TransitionLockOffset);
+                }
                 ownsTransition = true;
             }
             catch (IOException)
@@ -80,6 +96,8 @@ public static class WatcherLock
             stream.Position = SessionOffset;
             stream.Write(bytes);
             stream.Flush(flushToDisk: true);
+            Lock(stream, StartupLockOffset);
+            ownsStartup = true;
             try
             {
                 HeartbeatFile.Invalidate(projectRoot);
@@ -95,6 +113,11 @@ public static class WatcherLock
         }
         catch
         {
+            if (ownsStartup)
+            {
+                Unlock(stream, StartupLockOffset);
+            }
+
             if (ownsFreshness)
             {
                 Unlock(stream, FreshnessLockOffset);
@@ -157,7 +180,7 @@ public static class WatcherLock
             return null;
         }
 
-        return CaptureSnapshot(stream, out unavailableReason, afterInitialOwnerProbe: null);
+        return CaptureSnapshot(stream, out unavailableReason, afterInitialOwnerProbe: null, inspectStartup: true);
     }
 
     /// <summary>Deterministic test seam for simulating process death after the initial owner
@@ -174,13 +197,14 @@ public static class WatcherLock
             return null;
         }
 
-        return CaptureSnapshot(stream, out unavailableReason, afterInitialOwnerProbe);
+        return CaptureSnapshot(stream, out unavailableReason, afterInitialOwnerProbe, inspectStartup: false);
     }
 
     private static SnapshotLease? CaptureSnapshot(
         FileStream stream,
         out SnapshotUnavailableReason unavailableReason,
-        Action? afterInitialOwnerProbe)
+        Action? afterInitialOwnerProbe,
+        bool inspectStartup)
     {
         try
         {
@@ -208,6 +232,7 @@ public static class WatcherLock
                 afterInitialOwnerProbe?.Invoke();
                 var sessionId = ReadSession(stream);
                 var freshnessSuppressed = IsLocked(stream, FreshnessLockOffset);
+                var isStarting = inspectStartup && freshnessSuppressed && IsLocked(stream, StartupLockOffset);
 
                 // A process death releases byte-range locks without participating in the
                 // transition gate. Re-probe after reading the session and freshness byte so an
@@ -223,7 +248,7 @@ public static class WatcherLock
                 catch (IOException)
                 {
                     unavailableReason = SnapshotUnavailableReason.None;
-                    return new SnapshotLease(stream, isWatcherActive: true, sessionId, freshnessSuppressed, ownsOwnerProbe: false);
+                    return new SnapshotLease(stream, isWatcherActive: true, sessionId, freshnessSuppressed, isStarting);
                 }
             }
         }
@@ -356,7 +381,7 @@ public static class WatcherLock
                 Lock(stream, offset);
                 return;
             }
-            catch (IOException)
+            catch (IOException ex) when (!OperatingSystem.IsWindows() || ex.HResult == unchecked((int)0x80070021)) // ERROR_LOCK_VIOLATION
             {
                 Thread.Sleep(TimeSpan.FromMilliseconds(5));
             }
@@ -368,6 +393,7 @@ public static class WatcherLock
         private readonly object _gate = new();
         private FileStream? _stream;
         private bool _freshnessSuppressed;
+        private bool _awaitingFirstPublication = true;
 
         internal WatcherLease(FileStream stream, string sessionId, bool freshnessSuppressed)
         {
@@ -441,6 +467,12 @@ public static class WatcherLock
                 try
                 {
                     publishHeartbeat();
+                    if (_awaitingFirstPublication)
+                    {
+                        Unlock(stream, StartupLockOffset);
+                        _awaitingFirstPublication = false;
+                    }
+
                     if (_freshnessSuppressed)
                     {
                         Unlock(stream, FreshnessLockOffset);
@@ -468,6 +500,11 @@ public static class WatcherLock
                 LockWhenAvailable(stream, TransitionLockOffset);
                 try
                 {
+                    if (_awaitingFirstPublication)
+                    {
+                        Unlock(stream, StartupLockOffset);
+                    }
+
                     if (_freshnessSuppressed)
                     {
                         Unlock(stream, FreshnessLockOffset);
@@ -494,12 +531,14 @@ public static class WatcherLock
             bool isWatcherActive,
             string? sessionId,
             bool freshnessSuppressed = false,
+            bool isStarting = false,
             bool ownsOwnerProbe = false)
         {
             _stream = stream;
             IsWatcherActive = isWatcherActive;
             SessionId = sessionId;
             IsFreshnessSuppressed = freshnessSuppressed;
+            IsStarting = isStarting;
             _ownsOwnerProbe = ownsOwnerProbe;
         }
 
@@ -508,6 +547,9 @@ public static class WatcherLock
         public string? SessionId { get; }
 
         public bool IsFreshnessSuppressed { get; }
+
+        /// <summary>Set only by diagnostic snapshots when the owner still holds the startup lock.</summary>
+        internal bool IsStarting { get; }
 
         public void Dispose()
         {

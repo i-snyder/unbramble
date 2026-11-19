@@ -1,3 +1,5 @@
+using System.Text.Json;
+using UnBramble.Core.Config;
 using UnBramble.Core.Freshness;
 using UnBramble.Core.Store;
 using UnBramble.Tests.TestSupport;
@@ -24,14 +26,46 @@ public class PullSweepEverywhereTests
     }
 
     [Fact]
-    public void Cli_Stats_NeverIndexedBefore_ReportsNonZeroFileCount()
+    public void Cli_Stats_NeverIndexedBefore_ReturnsBeforeIndexing()
     {
         using var fixture = FixtureCopy.Create();
 
-        var (exitCode, stdOut, _) = CliRunner.Run("stats", "-p", fixture.Root);
+        var (exitCode, stdOut, _) = CliRunner.Run("stats", "-p", fixture.Root, "--json");
 
         Assert.Equal(0, exitCode);
-        Assert.DoesNotContain("Files: 0 ", stdOut, StringComparison.Ordinal);
+        using var json = JsonDocument.Parse(stdOut);
+        Assert.Equal("missing", json.RootElement.GetProperty("indexState").GetString());
+        Assert.False(json.RootElement.GetProperty("freshnessChecked").GetBoolean());
+        Assert.False(json.RootElement.TryGetProperty("files", out _));
+        Assert.False(File.Exists(UnBramblePaths.RelativeTo(fixture.Root, UnBramblePaths.DbRelativePath)));
+        Assert.NotNull(AutoWatchMarkers.TryReadLastSpawnAttempt(fixture.Root));
+    }
+
+    [Fact]
+    public void Cli_Stats_ShowsStoredCountsUntilRefreshIsRequested()
+    {
+        using var fixture = FixtureCopy.Create();
+        File.WriteAllText(fixture.Combine("unbramble.json"), """{"watch":{"autoStart":false}}""");
+
+        int FileCount(bool refresh)
+        {
+            string[] args = refresh ? ["stats", "--refresh"] : ["stats"];
+            var result = CliRunner.Run([.. args, "-p", fixture.Root, "--json"]);
+            Assert.Equal(0, result.ExitCode);
+            using var json = JsonDocument.Parse(result.StdOut);
+            Assert.Equal("available", json.RootElement.GetProperty("indexState").GetString());
+            Assert.Equal(refresh, json.RootElement.GetProperty("freshnessChecked").GetBoolean());
+            return json.RootElement.GetProperty("files").GetProperty("total").GetInt32();
+        }
+
+        var initial = FileCount(refresh: true);
+        Assert.True(initial > 0);
+        File.Copy(fixture.Combine("Assets", "Materials", "Rock.mat"), fixture.Combine("Assets", "Materials", "Copy.mat"));
+        File.Copy(fixture.Combine("Assets", "Materials", "Rock.mat.meta"), fixture.Combine("Assets", "Materials", "Copy.mat.meta"));
+
+        Assert.Equal(initial, FileCount(refresh: false));
+        Assert.Null(AutoWatchMarkers.TryReadLastSpawnAttempt(fixture.Root));
+        Assert.Equal(initial + 1, FileCount(refresh: true));
     }
 
     [Fact]
@@ -94,13 +128,16 @@ public class PullSweepEverywhereTests
     }
 
     [Fact]
-    public void Cli_Stats_FreshHeartbeat_SkipsSweep_ButStillAnswersCorrectly()
+    public void Cli_Stats_RefreshUsesVerifiedHeartbeat()
     {
         using var fixture = FixtureCopy.Create();
         _ = CliRunner.Run("init", "-p", fixture.Root);
-        using var watcher = WriteCurrentHeartbeat(fixture.Root, DateTime.UtcNow.AddSeconds(-1));
-
-        var (exitCode, stdOut, _) = CliRunner.Run("stats", "-p", fixture.Root, "--verbose");
+        using var engine = UnBramble.Core.UnBrambleEngine.Open(fixture.Root);
+        using var watcher = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(watcher);
+        var (exitCode, stdOut, _) = CliRunner.Run(
+            () => watcher.PublishFreshness(() => HeartbeatFile.Write(fixture.Root, 999, DateTime.UtcNow, engine.StoreInstanceId, watcher.SessionId)),
+            "stats", "--refresh", "-p", fixture.Root, "--verbose");
 
         Assert.Equal(0, exitCode);
         Assert.Contains("freshness: watcher heartbeat", stdOut, StringComparison.Ordinal);

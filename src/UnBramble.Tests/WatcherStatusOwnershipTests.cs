@@ -1,4 +1,6 @@
 using UnBramble.Core;
+using UnBramble.Core.Config;
+using UnBramble.Core.Exceptions;
 using UnBramble.Core.Freshness;
 using UnBramble.Core.Monitoring;
 using UnBramble.Tests.TestSupport;
@@ -7,6 +9,69 @@ namespace UnBramble.Tests;
 
 public class WatcherStatusOwnershipTests
 {
+    [Fact]
+    public void DuplicateWorker_ExitsBeforeCreatingDatabaseOrPublishingStatus()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var owner = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(owner);
+
+        var result = CliRunner.Run("watch-worker", fixture.Root);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(File.Exists(UnBramblePaths.RelativeTo(fixture.Root, UnBramblePaths.DbRelativePath)));
+        Assert.False(File.Exists(WatchStatusFile.PathFor(fixture.Root)));
+    }
+
+    [Fact]
+    public void WorkerOpenFailure_RecordsStoppedAndReleasesOwnership()
+    {
+        using var fixture = FixtureCopy.Create();
+        File.Delete(fixture.Combine("ProjectSettings", "EditorSettings.asset"));
+
+        var result = CliRunner.Run("watch-worker", fixture.Root);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(WatchActivityState.Stopped, WatchStatusFile.TryRead(fixture.Root)?.State);
+        Assert.Equal("absent", WatcherHealth.Read(fixture.Root, DateTime.UtcNow).State);
+    }
+
+    [Fact]
+    public void DetachedWorker_WaitsForNoOwnerDiagnosticSnapshotThenClaimsOwnership()
+    {
+        using var fixture = FixtureCopy.Create();
+        // Stop the worker at its first store-open check, after it has won the election.
+        File.Delete(fixture.Combine("ProjectSettings", "EditorSettings.asset"));
+        Directory.CreateDirectory(UnBramblePaths.StateDirFor(fixture.Root));
+        File.WriteAllText(WatcherLock.PathFor(fixture.Root), string.Empty);
+        using var snapshot = WatcherLock.TryAcquireExistingSnapshot(fixture.Root, out _);
+        Assert.NotNull(snapshot);
+        Assert.False(snapshot.IsWatcherActive);
+
+        Exception? workerError = null;
+        var worker = new Thread(() => workerError = Record.Exception(() => WatcherHost.RunAutoWorker(fixture.Root)))
+        {
+            IsBackground = true,
+        };
+        worker.Start();
+        try
+        {
+            // The startup thread's first managed wait is the transition gate. Observe that
+            // wait (or the old premature exit) before releasing the diagnostic snapshot.
+            Poll.Until(() => !worker.IsAlive || (worker.ThreadState & ThreadState.WaitSleepJoin) != 0);
+            Assert.True(worker.IsAlive, "worker exited while a diagnostic held the transition gate");
+            Assert.False(File.Exists(WatchStatusFile.PathFor(fixture.Root)));
+        }
+        finally
+        {
+            snapshot.Dispose();
+            Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "worker did not finish after the diagnostic released its snapshot");
+        }
+
+        Assert.IsType<ForceTextNotEnabledException>(workerError);
+        Assert.Equal(WatchActivityState.Stopped, WatchStatusFile.TryRead(fixture.Root)?.State);
+    }
+
     // No periodic status writes can hide a contender's overwrite during these synchronous tests.
     private static WatcherOptions QuietOptions() => new(
         DebounceInterval: TimeSpan.FromHours(1),
@@ -25,8 +90,8 @@ public class WatcherStatusOwnershipTests
         using var contenderEngine = UnBrambleEngine.Open(fixture.Root);
         var ownerTracker = new WatchStatusTracker(fixture.Root, pid: 101);
         var contenderTracker = new WatchStatusTracker(fixture.Root, pid: 202);
-        using var owner = new WatcherHost(ownerEngine, QuietOptions(), ownerTracker.OnWatcherEvent);
-        using var contender = new WatcherHost(contenderEngine, QuietOptions(), contenderTracker.OnWatcherEvent);
+        using var owner = new WatcherHost(ownerEngine, QuietOptions(), ownerTracker.OnWatcherEvent, onOwnerAcquired: ownerTracker.OnOwnerAcquired);
+        using var contender = new WatcherHost(contenderEngine, QuietOptions(), contenderTracker.OnWatcherEvent, onOwnerAcquired: contenderTracker.OnOwnerAcquired);
         Assert.True(owner.TryStartOnceForAuto());
         var before = File.ReadAllBytes(WatchStatusFile.PathFor(fixture.Root));
 

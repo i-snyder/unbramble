@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using UnBramble.Core.Monitoring;
 using UnBramble.Tests.TestSupport;
 
@@ -90,6 +91,23 @@ public class WatchStatusFileTests
         Assert.Null(read!.Current);
         Assert.Null(read.LastPass);
         Assert.Equal(WatchActivityState.Watching, read.State);
+    }
+
+    [Fact]
+    public void LegacyStatusWithoutSession_RemainsReadable()
+    {
+        using var fixture = FixtureCopy.Create();
+        WatchStatusFile.Write(fixture.Root, SampleSnapshot(fixture.Root));
+        var path = WatchStatusFile.PathFor(fixture.Root);
+        var legacy = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        legacy.Remove("watcherSessionId");
+        File.WriteAllText(path, legacy.ToJsonString());
+
+        var status = WatchStatusFile.TryRead(fixture.Root);
+
+        Assert.NotNull(status);
+        Assert.Equal(4242, status.Pid);
+        Assert.Null(status.WatcherSessionId);
     }
 
     [Fact]

@@ -115,24 +115,49 @@ public sealed class UnBrambleEngine : IDisposable
 
     /// <exception cref="ProjectNotFoundException">No Unity project found walking up from <paramref name="startPath"/>.</exception>
     /// <exception cref="ForceTextNotEnabledException">The project is not using (or provably using) Force Text serialization.</exception>
-    public static UnBrambleEngine Open(string startPath)
+    public static UnBrambleEngine Open(string startPath) => OpenProjectRoot(RequireProjectRoot(startPath));
+
+    internal static string RequireProjectRoot(string startPath) =>
+        ProjectDetector.FindProjectRoot(startPath) ?? throw new ProjectNotFoundException(startPath);
+
+    internal static UnBrambleEngine OpenProjectRoot(string root)
     {
-        var root = ProjectDetector.FindProjectRoot(startPath) ?? throw new ProjectNotFoundException(startPath);
-        ForceTextGate.Assert(root);
-
-        var config = UnBrambleConfigLoader.Load(root, out var configWarnings);
-        var unityVersion = ProjectDetector.ReadUnityVersion(root);
-        var dbPath = Path.Combine(root, config.DbPath.Replace('/', Path.DirectorySeparatorChar));
-
+        var (unityVersion, config, dbPath, warnings) = ReadProjectSettings(root);
         var store = UnBrambleStore.OpenOrCreate(dbPath, unityVersion, root);
 
-        var warnings = new List<string>(configWarnings);
         if (store.SchemaWasReset)
         {
             warnings.Add($"Schema version mismatch: rebuilding index from scratch (schema v{UnBrambleStore.CurrentSchemaVersion}).");
         }
 
         return new UnBrambleEngine(root, unityVersion, config, dbPath, store, warnings);
+    }
+
+    /// <summary>Opens an existing completed index for diagnostics without running a sweep,
+    /// changing its schema, waiting for the index writer, or establishing query freshness.</summary>
+    public static StatsSnapshot OpenStatsSnapshot(string startPath)
+    {
+        var root = RequireProjectRoot(startPath);
+        var (unityVersion, config, dbPath, warnings) = ReadProjectSettings(root);
+        var (status, version, store) = UnBrambleStore.OpenStatsSnapshot(dbPath);
+        try
+        {
+            var engine = store is null ? null : new UnBrambleEngine(root, unityVersion, config, dbPath, store, warnings);
+            return new StatsSnapshot(status, root, unityVersion, dbPath, config, warnings, version, engine);
+        }
+        catch
+        {
+            store?.Dispose();
+            throw;
+        }
+    }
+
+    private static (string UnityVersion, UnBrambleConfig Config, string DbPath, List<string> Warnings) ReadProjectSettings(string root)
+    {
+        ForceTextGate.Assert(root);
+        var config = UnBrambleConfigLoader.Load(root, out var warnings);
+        var dbPath = Path.Combine(root, config.DbPath.Replace('/', Path.DirectorySeparatorChar));
+        return (ProjectDetector.ReadUnityVersion(root), config, dbPath, warnings);
     }
 
     /// <summary>
@@ -1452,8 +1477,7 @@ public sealed class UnBrambleEngine : IDisposable
     }
 
     /// <summary>
-    /// The pull path: every query verb (who-uses,
-    /// uses, resolve, stats) calls this before answering. Sweeps unless a fresh watcher
+    /// The pull path for reference queries and explicit stats refreshes. Sweeps unless a fresh watcher
     /// heartbeat shows a live watcher already owns freshness — `init`/`index` never call this;
     /// they always sweep unconditionally, no flag exists to skip a sweep without a live
     /// heartbeat.
@@ -1481,12 +1505,10 @@ public sealed class UnBrambleEngine : IDisposable
     /// <see cref="RunIndex"/>, and also used to announce entering the concurrent-sweep wait below.
     /// Never invoked on the fresh-heartbeat fast path.</param>
     /// <param name="waitForConcurrentSweep">
-    /// True (every caller except `stats`) blocks until the other writer's heartbeat goes fresh (or
-    /// takes over itself if that writer disappears without ever leaving one, e.g. a crash) --
-    /// same "always answer from a fresh index" guarantee EnsureFresh has always made, just without
-    /// the duplicate-sweep race. False (`stats` only, by request: a status command should report
-    /// current state immediately, not stall behind someone else's multi-minute first index) returns
-    /// <see cref="FreshnessOutcome.SkippedConcurrentSweep"/> the instant contention is detected.
+    /// True waits for the active writer or takes over if it exits before publishing freshness.
+    /// False lets callers return <see cref="FreshnessOutcome.SkippedConcurrentSweep"/> on
+    /// contention. Either mode can run an inline sweep when the writer lease is available.
+    /// Use <see cref="OpenStatsSnapshot"/> to inspect the committed index without refreshing.
     /// </param>
     public FreshnessOutcome EnsureFresh(Action<ScanProgress>? onScanProgress = null, Action<string>? onPhase = null, bool waitForConcurrentSweep = true)
     {
@@ -1649,8 +1671,6 @@ public sealed class UnBrambleEngine : IDisposable
         Action<string>? onPhase,
         bool waitForConcurrentSweep)
     {
-        onPhase?.Invoke("freshness: the previous index did not complete -- rebuilding from scratch");
-
         var writerLease = IndexWriterLock.TryAcquire(ProjectRoot);
         if (writerLease is null)
         {

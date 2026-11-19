@@ -27,6 +27,7 @@ public sealed class WatchStatusTracker
     private readonly int _pid;
     private readonly DateTime _startedUtc;
     private readonly object _gate = new();
+    private string? _watcherSessionId;
 
     // Processing/"startup" (NOT Waiting), so a monitor started concurrently
     // with host.Start()
@@ -73,6 +74,9 @@ public sealed class WatchStatusTracker
     /// (true by default). Tests that only care about the in-memory snapshot can disable this to
     /// avoid touching disk.</summary>
     public bool WriteToDisk { get; init; } = true;
+
+    /// <summary>Publish the lifetime owner's identity before promotion starts its catch-up work.</summary>
+    public void OnOwnerAcquired(string sessionId) => Mutate(() => _watcherSessionId = sessionId, force: true);
 
     public WatchStatusSnapshot Snapshot()
     {
@@ -360,5 +364,6 @@ public sealed class WatchStatusTracker
     }
 
     private WatchStatusSnapshot BuildSnapshotLocked() =>
-        new(SchemaVersion, _pid, _projectRoot, _state, _startedUtc, _lastUpdatedUtc, _current, _totals, _lastPass);
+        new(SchemaVersion, _pid, _projectRoot, _state, _startedUtc, _lastUpdatedUtc, _current, _totals, _lastPass,
+            _watcherSessionId);
 }

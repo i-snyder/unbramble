@@ -45,7 +45,8 @@ public class EnsureFreshConcurrencyTests
         var result = CliRunner.Run("stats", "-p", fixture.Root);
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Contains("another unbramble process is currently updating", result.StdOut);
+        Assert.Contains("Counts from the committed index", result.StdOut);
+        Assert.Contains("Files:", result.StdOut);
         Assert.DoesNotContain("database is locked", result.StdErr, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -199,13 +200,13 @@ public class EnsureFreshConcurrencyTests
                 onScanProgress: _ => Interlocked.Increment(ref scanProgressCalls),
                 onPhase: phase =>
                 {
-                    if (phase.Contains("previous index did not complete", StringComparison.Ordinal))
+                    if (phase.Contains("waiting for its committed result", StringComparison.Ordinal))
                     {
                         recoveryStarted.Set();
                     }
                 }));
 
-            Assert.True(recoveryStarted.Wait(TimeSpan.FromSeconds(5)), "EnsureFresh never entered incomplete-index recovery.");
+            Assert.True(recoveryStarted.Wait(TimeSpan.FromSeconds(5)), "EnsureFresh never waited for the writer repairing the incomplete index.");
             SetIndexComplete(engine.DbPath, complete: true);
             writerLock.Dispose();
             writerLock = null;

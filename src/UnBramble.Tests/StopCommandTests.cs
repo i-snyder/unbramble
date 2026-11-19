@@ -1,4 +1,7 @@
 using System.Diagnostics;
+using UnBramble.Core.Config;
+using UnBramble.Core.Freshness;
+using UnBramble.Core.Monitoring;
 using UnBramble.Tests.TestSupport;
 
 namespace UnBramble.Tests;
@@ -45,6 +48,7 @@ public class StopCommandTests
         watchStart.ArgumentList.Add("watch-worker");
         watchStart.ArgumentList.Add(fixture.Root);
 
+        using var schemaBlocker = IndexWriterLock.Acquire(fixture.Root);
         using var watchProcess = Process.Start(watchStart) ?? throw new InvalidOperationException("failed to start watcher worker");
 
         // The watcher runs indefinitely and keeps writing cs-analysis diagnostics to stderr --
@@ -56,6 +60,16 @@ public class StopCommandTests
 
         try
         {
+            var database = UnBramblePaths.RelativeTo(fixture.Root, UnBramblePaths.DbRelativePath);
+            Poll.Until(() => File.Exists(database), message: "worker never reached the cold store open");
+            var starting = WatcherHealth.Read(fixture.Root, DateTime.UtcNow);
+            Assert.Equal("starting", starting.State);
+            Assert.Equal("watcher-startup", starting.Reason);
+            Assert.Equal(watchProcess.Id, starting.Pid);
+            Assert.NotNull(starting.WatcherSessionId);
+            Assert.Null(starting.HeartbeatUtc);
+            schemaBlocker.Dispose();
+
             var heartbeatPath = Path.Combine(fixture.Root, ".unbramble", "watcher.heartbeat");
             Poll.Until(() => File.Exists(heartbeatPath), message: "watcher never wrote a heartbeat file");
             Assert.False(watchProcess.HasExited, "watcher process exited unexpectedly before 'stop' ran");

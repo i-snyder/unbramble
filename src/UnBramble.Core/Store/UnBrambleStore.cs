@@ -81,6 +81,7 @@ public sealed class UnBrambleStore : IDisposable
     ];
 
     private readonly SqliteConnection _connection;
+    private SqliteTransaction? _statsReadTransaction;
     private string? _storeInstanceId;
 
     // UnityEvent linking is a query-time derived view over refs/symbols. A symbol-shaped
@@ -109,6 +110,88 @@ public sealed class UnBrambleStore : IDisposable
     {
         _connection = connection;
         DbPath = dbPath;
+    }
+
+    internal static (StatsSnapshotStatus Status, int? SchemaVersion, UnBrambleStore? Store) OpenStatsSnapshot(string dbPath)
+    {
+        try
+        {
+            // File.Exists also returns false on access errors. Only a genuinely missing file
+            // should be reported as a project whose index can be started for the first time.
+            File.GetAttributes(dbPath);
+        }
+        catch (IOException ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return (StatsSnapshotStatus.Missing, null, null);
+        }
+
+        SQLitePCL.Batteries_V2.Init();
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+            DefaultTimeout = 1,
+        }.ToString());
+        var store = new UnBrambleStore(connection, dbPath);
+        try
+        {
+            connection.Open();
+            ExecuteNonQuery(connection, "PRAGMA busy_timeout=1000;");
+            // Pin the marker and all following count/coverage reads to one WAL snapshot.
+            // A deferred transaction takes no writer intent, even while another pass commits.
+            store._statsReadTransaction = connection.BeginTransaction(deferred: true);
+            var (status, version) = store.ReadStatsSnapshotStatus();
+            if (status == StatsSnapshotStatus.Available)
+            {
+                return (status, version, store);
+            }
+
+            store.Dispose();
+            return (status, version, null);
+        }
+        catch
+        {
+            store.Dispose();
+            throw;
+        }
+    }
+
+    private (StatsSnapshotStatus Status, int? SchemaVersion) ReadStatsSnapshotStatus()
+    {
+        var versionText = TryQuerySchemaVersion();
+        if (versionText is null)
+        {
+            // Initial schema creation commits its tables individually and publishes its version
+            // last. An unrelated database at a configured dbPath must surface as an error.
+            var firstTable = QueryScalar(_connection, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY rowid LIMIT 1;");
+            if (firstTable is null or "meta_kv")
+            {
+                return (StatsSnapshotStatus.Incomplete, null);
+            }
+
+            throw new InvalidDataException($"The database at '{DbPath}' has no UnBramble index metadata.");
+        }
+
+        if (!int.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var version)
+            || version <= 0 || version.ToString(CultureInfo.InvariantCulture) != versionText
+            || string.IsNullOrWhiteSpace(QueryMetaValue("unity_version")))
+        {
+            throw new InvalidDataException($"Invalid UnBramble schema metadata in '{DbPath}'.");
+        }
+
+        if (version != CurrentSchemaVersion)
+        {
+            return (StatsSnapshotStatus.Incompatible, version);
+        }
+
+        if (!TryLoadCurrentStoreIdentity(versionText, out var instanceId))
+        {
+            throw new InvalidDataException($"Invalid UnBramble store identity or index completion marker in '{DbPath}'.");
+        }
+
+        _storeInstanceId = instanceId;
+        return (IsIndexComplete() ? StatsSnapshotStatus.Available : StatsSnapshotStatus.Incomplete, version);
     }
 
     public static UnBrambleStore OpenOrCreate(string dbPath, string unityVersion, string projectRoot)
@@ -4107,6 +4190,7 @@ public sealed class UnBrambleStore : IDisposable
 
     public void Dispose()
     {
+        _statsReadTransaction?.Dispose();
         _connection.Dispose();
     }
 }

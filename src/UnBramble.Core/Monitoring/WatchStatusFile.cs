@@ -71,6 +71,7 @@ public static class WatchStatusFile
         w.WriteStartObject();
         w.WriteNumber("schemaVersion", s.SchemaVersion);
         w.WriteNumber("pid", s.Pid);
+        WriteNullableString(w, "watcherSessionId", s.WatcherSessionId);
         w.WriteString("projectRoot", s.ProjectRoot);
         w.WriteString("state", s.State.ToString());
         w.WriteString("startedUtc", s.StartedUtc.ToString("O", CultureInfo.InvariantCulture));
@@ -162,12 +163,20 @@ public static class WatchStatusFile
     /// "never wrong, only sometimes stale" contract as <see cref="Freshness.HeartbeatFile.TryRead"/>:
     /// a caller (the `monitor` render loop) treats null as "no data yet / can't tell", never as
     /// an error worth crashing over.</summary>
-    public static WatchStatusSnapshot? TryRead(string projectRoot)
+    public static WatchStatusSnapshot? TryRead(string projectRoot) => TryRead(projectRoot, maxBytes: long.MaxValue);
+
+    /// <summary>Bound the optional display data read while a health check holds the owner transition gate.</summary>
+    internal static WatchStatusSnapshot? TryRead(string projectRoot, long maxBytes)
     {
         var path = PathFor(projectRoot);
         try
         {
-            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length > maxBytes)
+            {
+                return null;
+            }
+
             using var doc = JsonDocument.Parse(stream);
             return ParseSnapshot(doc.RootElement);
         }
@@ -231,7 +240,8 @@ public static class WatchStatusFile
                 GetNullableInt(lastPassEl, "removed"));
         }
 
-        return new WatchStatusSnapshot(schemaVersion, pid, projectRoot, state, startedUtc, lastUpdatedUtc, current, totals, lastPass);
+        return new WatchStatusSnapshot(schemaVersion, pid, projectRoot, state, startedUtc, lastUpdatedUtc, current, totals, lastPass,
+            GetNullableString(root, "watcherSessionId"));
     }
 
     private static DateTime ParseUtc(JsonElement element) =>

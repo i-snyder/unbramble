@@ -103,20 +103,95 @@ public class WatcherHealthTests
     }
 
     [Fact]
-    public void PromotingOwner_WithoutHeartbeatReportsUpdating()
+    public void NewOwner_ReportsStartingBeforeProgressAndUntilFirstSuccessfulPublication()
     {
         using var fixture = FixtureCopy.Create();
         using var owner = WatcherLock.TryAcquire(fixture.Root);
         Assert.NotNull(owner);
+        var lockLength = 3 + owner.SessionId.Length;
+        Assert.Equal(lockLength, new FileInfo(WatcherLock.PathFor(fixture.Root)).Length);
+
+        Assert.Throws<IOException>(() => owner.PublishFreshness(() => throw new IOException("publication failed")));
 
         var health = WatcherHealth.Read(fixture.Root, Now);
 
-        Assert.Equal("updating", health.State);
+        Assert.Equal("starting", health.State);
+        Assert.Equal("watcher-startup", health.Reason);
         Assert.True(health.OwnerActive);
         Assert.True(health.FreshnessSuppressed);
         Assert.Null(health.Pid);
         Assert.Null(health.HeartbeatFresh);
         Assert.Equal(owner.SessionId, health.WatcherSessionId);
+    }
+
+    [Fact]
+    public void NewOwner_DoesNotInheritPreviousSessionsPid()
+    {
+        using var fixture = FixtureCopy.Create();
+        using (var previousOwner = WatcherLock.TryAcquire(fixture.Root))
+        {
+            Assert.NotNull(previousOwner);
+            new WatchStatusTracker(fixture.Root, 4242).OnOwnerAcquired(previousOwner.SessionId);
+        }
+
+        using var nextOwner = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(nextOwner);
+        var health = WatcherHealth.Read(fixture.Root, Now);
+
+        Assert.Equal("starting", health.State);
+        Assert.Equal(nextOwner.SessionId, health.WatcherSessionId);
+        Assert.Null(health.Pid);
+    }
+
+    [Fact]
+    public void OlderSuppressedOwner_WithoutStartupByte_ReportsUpdating()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            return;
+        }
+
+        using var fixture = FixtureCopy.Create();
+        var path = WatcherLock.PathFor(fixture.Root);
+        var session = Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, "   " + session);
+        using var olderOwner = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
+        olderOwner.Lock(0, 1);
+        olderOwner.Lock(2, 1);
+
+        var health = WatcherHealth.Read(fixture.Root, Now);
+
+        Assert.True(health.OwnerActive);
+        Assert.Equal(session, health.WatcherSessionId);
+        Assert.Null(health.Pid);
+        Assert.Equal("updating", health.State);
+        Assert.Equal("freshness-suppressed", health.Reason);
+    }
+
+    [Fact]
+    public void AfterFirstPublication_RetainedStartupProgressCannotChangeUpdateState()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var owner = WatcherLock.TryAcquire(fixture.Root);
+        Assert.NotNull(owner);
+        var tracker = new WatchStatusTracker(fixture.Root, 4242);
+        tracker.OnOwnerAcquired(owner.SessionId);
+        var statusPath = WatchStatusFile.PathFor(fixture.Root);
+        var startupBytes = File.ReadAllBytes(statusPath);
+
+        owner.PublishFreshness(() => HeartbeatFile.Write(fixture.Root, 4242, Now, StoreId, owner.SessionId));
+        tracker.OnWatcherEvent(WatcherEvent.Promoted);
+        owner.SuppressFreshness(() => HeartbeatFile.Invalidate(fixture.Root));
+        File.WriteAllBytes(statusPath, startupBytes);
+
+        var health = WatcherHealth.Read(fixture.Root, Now);
+
+        Assert.True(health.FreshnessSuppressed);
+        Assert.Null(health.HeartbeatUtc);
+        Assert.Equal(4242, health.Pid);
+        Assert.Equal("updating", health.State);
+        Assert.Equal("freshness-suppressed", health.Reason);
     }
 
     [Fact]

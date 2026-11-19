@@ -104,6 +104,37 @@ public class AutoSpawnQueryPathTests
     }
 
     [Fact]
+    public async Task Cli_ColdStats_ExitsWhileAutomaticLauncherIsStillBlocked()
+    {
+        using var fixture = FixtureCopy.Create();
+        using var releaseLaunch = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var result = RunWithSpawnObserver((_, _) =>
+            {
+                entered.SetResult(Thread.CurrentThread.IsBackground);
+                // Bound the simulated stall so a regression to synchronous launch fails normally.
+                releaseLaunch.Wait(TimeSpan.FromSeconds(10));
+                finished.SetResult();
+            }, "stats", fixture.Root, "--json");
+
+            Assert.True(await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)), "the blocked launcher must not keep the CLI process alive");
+            Assert.False(finished.Task.IsCompleted, "stats waited for the blocked launcher to finish");
+            Assert.Equal(0, result.ExitCode);
+            using var answer = JsonDocument.Parse(result.StdOut);
+            Assert.Equal("missing", answer.RootElement.GetProperty("indexState").GetString());
+            Assert.NotNull(AutoWatchMarkers.TryReadLastSpawnAttempt(fixture.Root));
+        }
+        finally
+        {
+            releaseLaunch.Set();
+            await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
     public void MonitorStartup_AlwaysRecordsAndTouchesBeforeSpawningWorker()
     {
         using var fixture = FixtureCopy.Create();

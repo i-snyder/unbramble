@@ -38,7 +38,10 @@ public class WatchStatusEndToEndTests
         using var fixture = FixtureCopy.Create();
         using var engine = UnBrambleEngine.Open(fixture.Root);
 
-        var tracker = new WatchStatusTracker(engine.ProjectRoot, pid: 4242);
+        var tracker = new WatchStatusTracker(engine.ProjectRoot, Environment.ProcessId);
+        WatcherHealthSnapshot? acquired = null;
+        WatcherHealthSnapshot? draining = null;
+        WatcherHealthSnapshot? updating = null;
         var sawProcessingBeforeSweepRan = false;
 
         using var host = new WatcherHost(engine, FastOptions(), onEvent: e =>
@@ -49,6 +52,21 @@ public class WatchStatusEndToEndTests
                 var onDisk = WatchStatusFile.TryRead(fixture.Root);
                 sawProcessingBeforeSweepRan = onDisk is { State: WatchActivityState.Processing, Current: { Kind: "initial-index" } };
             }
+            if (e == WatcherEvent.PromotionBufferDrained)
+            {
+                draining = WatcherHealth.Read(fixture.Root, DateTime.UtcNow);
+            }
+        }, onDiagnostic: line =>
+        {
+            tracker.OnDiagnosticLine(line);
+            if (line.Contains("error-resync sweep: starting", StringComparison.Ordinal))
+            {
+                updating = WatcherHealth.Read(fixture.Root, DateTime.UtcNow);
+            }
+        }, onOwnerAcquired: session =>
+        {
+            tracker.OnOwnerAcquired(session);
+            acquired = WatcherHealth.Read(fixture.Root, DateTime.UtcNow);
         });
 
         host.Start();
@@ -61,6 +79,24 @@ public class WatchStatusEndToEndTests
             // to Watching, same as WatcherEvent.Promoted's own handling in WatchStatusTracker.
             var final = WatchStatusFile.TryRead(fixture.Root);
             Assert.Equal(WatchActivityState.Watching, final!.State);
+            foreach (var starting in new[] { acquired, draining })
+            {
+                Assert.NotNull(starting);
+                Assert.Equal("starting", starting.State);
+                Assert.Equal("watcher-startup", starting.Reason);
+                Assert.Equal(Environment.ProcessId, starting.Pid);
+                Assert.Equal(final.WatcherSessionId, starting.WatcherSessionId);
+                Assert.True(starting.FreshnessSuppressed);
+                Assert.Null(starting.HeartbeatUtc);
+            }
+
+            Assert.Equal("watching", WatcherHealth.Read(fixture.Root, DateTime.UtcNow).State);
+            host.SimulateWatcherError();
+            Assert.NotNull(updating);
+            Assert.Equal("updating", updating.State);
+            Assert.Equal("freshness-suppressed", updating.Reason);
+            Assert.Equal(Environment.ProcessId, updating.Pid);
+            Assert.Null(updating.HeartbeatUtc);
         }
         finally
         {

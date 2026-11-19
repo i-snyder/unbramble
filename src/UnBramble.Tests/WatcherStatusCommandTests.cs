@@ -30,6 +30,43 @@ public class WatcherStatusCommandTests
         Assert.False(Directory.Exists(UnBramblePaths.StateDirFor(fixture.Root)));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AbsentWatcher_IdentifiesAnActiveIndexWriterOnlyWhileItsLeaseIsHeld(bool existingWatcherLock)
+    {
+        using var fixture = FixtureCopy.Create();
+        using (var writer = IndexWriterLock.TryAcquire(fixture.Root))
+        {
+            Assert.NotNull(writer);
+            if (existingWatcherLock)
+            {
+                File.WriteAllBytes(WatcherLock.PathFor(fixture.Root), []);
+            }
+
+            AssertReason(OperatingSystem.IsWindows() ? "index-writer-active" : "no-owner");
+        }
+
+        AssertReason("no-owner");
+        using var reader = IndexReadLock.TryAcquire(fixture.Root);
+        Assert.NotNull(reader);
+        AssertReason("no-owner");
+        AssertNoIndexOrMarkers(fixture.Root);
+
+        void AssertReason(string reason)
+        {
+            var (exitCode, stdout, stderr) = CliRunner.Run("watcher-status", fixture.Root, "--json");
+            Assert.Equal(0, exitCode);
+            Assert.Empty(stderr);
+            using var json = JsonDocument.Parse(stdout);
+            var result = json.RootElement;
+            Assert.Equal("absent", result.GetProperty("state").GetString());
+            Assert.False(result.GetProperty("ownerActive").GetBoolean());
+            Assert.Equal(reason, result.GetProperty("reason").GetString());
+            AssertNullObservations(result);
+        }
+    }
+
     [Fact]
     public void ExistingState_DoesNotOpenOrMigrateIndexOrTouchMarkers()
     {

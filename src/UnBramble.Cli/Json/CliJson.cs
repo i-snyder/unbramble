@@ -188,13 +188,32 @@ public sealed class CsBindingFailureJson
     public string? ErrorCodes { get; init; }
 }
 
-public sealed class StatsResultJson
+public class StatsSnapshotJson
 {
     [JsonPropertyName("unbrambleSchema")]
     public int UnBrambleSchema { get; init; } = SchemaVersion.Current;
 
     [JsonPropertyName("project")]
     public required string Project { get; init; }
+
+    [JsonPropertyName("indexState")]
+    public required string IndexState { get; init; }
+
+    [JsonPropertyName("freshnessChecked")]
+    public bool FreshnessChecked { get; init; }
+}
+
+public sealed class UnavailableStatsJson : StatsSnapshotJson
+{
+    [JsonPropertyName("message")]
+    public required string Message { get; init; }
+}
+
+public sealed class StatsResultJson : StatsSnapshotJson
+{
+    /// <summary>Number of distinct GUIDs claimed by multiple indexed files.</summary>
+    [JsonPropertyName("guidCollisions")]
+    public int GuidCollisions { get; init; }
 
     [JsonPropertyName("unityVersion")]
     public required string UnityVersion { get; init; }
@@ -858,6 +877,7 @@ public sealed class DeadCandidatesResultJson
 
 [JsonSerializable(typeof(ResolveResultJson))]
 [JsonSerializable(typeof(WatcherStatusResultJson))]
+[JsonSerializable(typeof(UnavailableStatsJson))]
 [JsonSerializable(typeof(StatsResultJson))]
 [JsonSerializable(typeof(IndexResultJson))]
 [JsonSerializable(typeof(QueryResultJson))]
