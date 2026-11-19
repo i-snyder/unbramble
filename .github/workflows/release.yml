@@ -94,27 +94,9 @@ jobs:
   verify-install:
     needs: release
     if: inputs.winget_upgrade_from != ''
-    runs-on: windows-latest
-    timeout-minutes: 20
     permissions:
       contents: read
-    env:
-      RELEASE_VERSION: ${{ needs.release.outputs.version }}
-    steps:
-      - name: Check out the release fixture and installation test
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: Verify published ZIP and WinGet install, upgrade, and uninstall
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          WINGET_UPGRADE_FROM: ${{ inputs.winget_upgrade_from }}
-        run: ./scripts/verify-release-install.ps1 -Version $env:RELEASE_VERSION -PreviousVersion $env:WINGET_UPGRADE_FROM
-      - name: Save verified WinGet manifests
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: winget-manifest-${{ env.RELEASE_VERSION }}
-          path: ${{ runner.temp }}/unbramble-release/candidate/manifests/i/i-snyder/unbramble/${{ env.RELEASE_VERSION }}/*.yaml
-          if-no-files-found: error
-          retention-days: 3
+    uses: ./.github/workflows/verify-release-install.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
+      winget_upgrade_from: ${{ inputs.winget_upgrade_from }}

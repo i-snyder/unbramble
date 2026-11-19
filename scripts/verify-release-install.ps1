@@ -67,27 +67,51 @@ if ((Test-Path -LiteralPath $manual) -or [Environment]::GetEnvironmentVariable('
 }
 
 $env:Path += ";$env:LOCALAPPDATA\Microsoft\WindowsApps"
+function Get-VerifiedDownload([string]$Url, [string]$Sha256) {
+    $path = Join-Path $root ([uri]$Url).Segments[-1]
+    Invoke-WebRequest $Url -OutFile $path -MaximumRetryCount 3
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $Sha256) {
+        throw "SHA-256 mismatch for $Url."
+    }
+    return $path
+}
+
 try {
-    $clientVersion = ((winget.exe --version) -replace '^v') -as [version]
+    $wingetExe = (Get-Command winget.exe -CommandType Application).Source
+    $clientVersion = ((& $wingetExe --version) -replace '^v') -as [version]
 } catch {
     # A fresh user can have the App Installer alias before it is registered.
     $clientVersion = $null
 }
 if ($clientVersion -lt [version]'1.12') {
-    Install-Module Microsoft.WinGet.Client -Repository PSGallery -Scope CurrentUser -Force
-    Repair-WinGetPackageManager -Latest -AllUsers
-    $clientVersion = ((winget.exe --version) -replace '^v') -as [version]
+    # Server images can contain an App Installer resource bundle without its x64 payload.
+    # Install the complete signed release for the current runner user with its x64 frameworks.
+    $wingetRelease = 'https://github.com/microsoft/winget-cli/releases/download/v1.29.380'
+    $bundle = Get-VerifiedDownload "$wingetRelease/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle" '65dea9c01ce08ee7b763366b27c0e651f97db857c11ca9b9c301826c10092f2e'
+    $dependencies = Get-VerifiedDownload "$wingetRelease/DesktopAppInstaller_Dependencies.zip" 'ba875afe9d190f61218985ac0292a99d1db710bf93e13c68944ca9d89f0d82d1'
+    $dependencyDir = Join-Path $root 'app-installer-dependencies'
+    Expand-Archive -LiteralPath $dependencies -DestinationPath $dependencyDir
+    Import-Module Appx -UseWindowsPowerShell
+    $installedFrameworks = Get-AppxPackage -PackageTypeFilter Framework | Where-Object Architecture -eq 'X64'
+    $missingDependencies = foreach ($framework in Get-ChildItem -LiteralPath (Join-Path $dependencyDir 'x64') -Filter '*.appx' -File) {
+        $name, $versionRequired = $framework.BaseName.Split('_')[0..1]
+        if (!($installedFrameworks | Where-Object { $_.Name -eq $name -and [version]$_.Version -ge [version]$versionRequired })) {
+            $framework.FullName
+        }
+    }
+    $appxOptions = @{ Path = $bundle; StubPackageOption = 'InstallFull'; ErrorAction = 'Stop' }
+    if ($missingDependencies) { $appxOptions.DependencyPath = @($missingDependencies) }
+    Add-AppxPackage @appxOptions
+    $appInstaller = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -PackageTypeFilter Main
+    $wingetExe = Join-Path $appInstaller.InstallLocation 'winget.exe'
+    $clientVersion = ((& $wingetExe --version) -replace '^v') -as [version]
     if ($clientVersion -lt [version]'1.12') { throw 'WinGet 1.12 or later is required to validate the release manifest.' }
 }
 Write-Host "Testing with WinGet $clientVersion."
-winget settings --enable LocalManifestFiles
+& $wingetExe settings --enable LocalManifestFiles
 
 # Pin the standalone manifest generator to Microsoft's published SHA-256.
-$creator = Join-Path $root 'wingetcreate.exe'
-Invoke-WebRequest 'https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe' -OutFile $creator -MaximumRetryCount 3
-if ((Get-FileHash $creator -Algorithm SHA256).Hash -ne '24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea') {
-    throw 'WinGetCreate download failed its checksum.'
-}
+$creator = Get-VerifiedDownload 'https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe' '24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea'
 $out = Join-Path $root 'candidate'
 $env:DOTNET_ROLL_FORWARD = 'Major'
 & $creator update $id --urls $zipUrl --version $Version --release-date $releaseDate --release-notes-url $release.html_url --out $out --token $env:GH_TOKEN
@@ -115,7 +139,7 @@ $filenames = "$id.installer.yaml", "$id.locale.en-US.yaml", "$id.yaml"
 if (Compare-Object $filenames @(Get-ChildItem $candidate -Name)) {
     throw 'Unexpected WinGet manifest files.'
 }
-winget validate --manifest $candidate
+& $wingetExe validate --manifest $candidate
 
 $install = '--disable-interactivity', '--accept-package-agreements', '--accept-source-agreements'
 $uninstall = '--disable-interactivity', '--accept-source-agreements'
@@ -127,15 +151,15 @@ function Get-InstalledExe {
 }
 
 Write-Host "Testing clean installation of the candidate manifest and the published $PreviousVersion catalog package."
-winget install --manifest $candidate --scope machine @install
+& $wingetExe install --manifest $candidate --scope machine @install
 $installed = Get-InstalledExe
 Test-InstalledCli $installed $Version
-winget uninstall --manifest $candidate @uninstall
+& $wingetExe uninstall --manifest $candidate @uninstall
 if (Test-Path -LiteralPath $installed) { throw 'WinGet retained the candidate executable after uninstall.' }
-winget install --id $id --exact --version $PreviousVersion --source winget --scope machine @install
+& $wingetExe install --id $id --exact --version $PreviousVersion --source winget --scope machine @install
 $installed = Get-InstalledExe
 Test-InstalledCli $installed $PreviousVersion
-winget uninstall --id $id --exact --source winget @uninstall
+& $wingetExe uninstall --id $id --exact --source winget @uninstall
 if (Test-Path -LiteralPath $installed) { throw 'WinGet retained the catalog executable after uninstall.' }
 
 # WinGet includes the source ID in a portable package's identity. Use local manifests
@@ -147,11 +171,11 @@ foreach ($file in $filenames) {
     Invoke-WebRequest "$merged/$file" -OutFile (Join-Path $previous $file) -MaximumRetryCount 3
 }
 Write-Host "Testing an in-place upgrade from the merged $PreviousVersion manifests to $Version."
-winget install --manifest $previous --scope machine @install
+& $wingetExe install --manifest $previous --scope machine @install
 $installed = Get-InstalledExe
 Test-InstalledCli $installed $PreviousVersion
-winget upgrade --manifest $candidate @install
+& $wingetExe upgrade --manifest $candidate @install
 if ((Get-InstalledExe) -ne $installed) { throw 'WinGet changed the executable path during the upgrade.' }
 Test-InstalledCli $installed $Version
-winget uninstall --manifest $candidate @uninstall
+& $wingetExe uninstall --manifest $candidate @uninstall
 if (Test-Path -LiteralPath $installed) { throw 'WinGet retained the upgraded executable after uninstall.' }
